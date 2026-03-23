@@ -114,7 +114,7 @@ def train(
     model = TriViewAutoencoder(latent_dim=latent_dim).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=5, verbose=True
+        optimizer, mode="min", factor=0.5, patience=5
     )
 
     n_params = sum(p.numel() for p in model.parameters())
