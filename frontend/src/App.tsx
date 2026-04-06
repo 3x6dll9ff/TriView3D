@@ -50,13 +50,36 @@ import './index.css' // We will add glassmorphism styles here
 function CellMesh({ vertices, indices, position, color }: any) {
   const geometry = useMemo(() => {
     if (!vertices || !indices || vertices.length === 0) return null
+    
+    // marching_cubes возвращает координаты в numpy-порядке [v0, v1, v2] ~ [Z, Y, X].
+    // Фиксируем ориентацию так, чтобы ось top/bottom (v0) всегда была вертикальной (world Y):
+    // top (малый v0) -> вверх, bottom (большой v0) -> вниз.
+    let minV0 = Number.POSITIVE_INFINITY
+    let maxV0 = Number.NEGATIVE_INFINITY
+    for (let i = 0; i < vertices.length; i += 3) {
+      const v0 = vertices[i]
+      if (v0 < minV0) minV0 = v0
+      if (v0 > maxV0) maxV0 = v0
+    }
+
+    // Если по текущему маппингу top оказался ниже bottom, инвертируем вертикальную ось.
+    const shouldFlipVertical = (minV0 - 32) < (maxV0 - 32)
+
+    const newVertices = new Float32Array(vertices.length)
+    for (let i = 0; i < vertices.length; i += 3) {
+      const v0 = vertices[i]      // Z in numpy (top/bottom axis)
+      const v1 = vertices[i + 1]  // Y in numpy
+      const v2 = vertices[i + 2]  // X in numpy
+
+      newVertices[i] = v2 - 32
+      newVertices[i + 1] = shouldFlipVertical ? (32 - v0) : (v0 - 32)
+      newVertices[i + 2] = v1 - 32
+    }
+
     const geo = new THREE.BufferGeometry()
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3))
+    geo.setAttribute('position', new THREE.BufferAttribute(newVertices, 3))
     geo.setIndex(indices)
     geo.computeVertexNormals()
-    // Center the geometry around its own origin for individual rotation, 
-    // but the backend sends [0..64] bounds. We can manually translate it:
-    geo.translate(-32, -32, -32)
     return geo
   }, [vertices, indices])
 
@@ -244,38 +267,7 @@ function App() {
               </div>
               <div className="w-full flex-1 flex flex-col md:flex-row items-start justify-center gap-8 pb-8">
           
-          {/* BLOCK 1: GROUND TRUTH */}
-          <div className="w-full md:w-1/2 h-[65vh] flex flex-col bg-white/5 border border-white/10 rounded-2xl overflow-hidden relative shadow-2xl">
-            <div className="absolute top-0 w-full p-5 bg-gradient-to-b from-blue-900/50 to-transparent z-10 pointer-events-none">
-              <h4 className="text-blue-400 font-bold tracking-widest uppercase text-lg drop-shadow-md">Ground Truth</h4>
-              <p className="text-white/60 text-xs mt-1">Original Physical Organism</p>
-            </div>
-            
-            <div className="flex-1 relative cursor-move">
-              {!data && !loading && (
-                 <div className="absolute inset-0 flex items-center justify-center text-white/20 pointer-events-none text-xl lowercase font-light tracking-widest">
-                   awaiting selection...
-                 </div>
-              )}
-              {/* Отельный Canvas для GT */}
-              <Canvas camera={{ position: [0, 80, 100], fov: 45 }}>
-                <color attach="background" args={['#050510']} />
-                <ambientLight intensity={0.2} />
-                <pointLight position={[10, 10, 10]} intensity={1.5} color="#8b5cf6" />
-                <pointLight position={[-10, -10, -10]} intensity={1} color="#3b82f6" />
-                <Environment preset="city" />
-                <Stars radius={100} depth={50} count={1000} factor={4} fade />
-                
-                {data?.gt && (
-                  <CellMesh vertices={data.gt.vertices} indices={data.gt.indices} color="#3b82f6" />
-                )}
-                
-                <SyncedControls />
-              </Canvas>
-            </div>
-          </div>
-
-          {/* BLOCK 2: AI PREDICTION */}
+          {/* BLOCK 1: AI PREDICTION */}
           <div className="w-full md:w-1/2 h-[65vh] flex flex-col bg-white/5 border border-white/10 rounded-2xl overflow-hidden relative shadow-2xl">
             <div className="absolute top-0 w-full p-5 bg-gradient-to-b from-purple-900/50 to-transparent z-10 pointer-events-none">
               <h4 className="text-purple-400 font-bold tracking-widest uppercase text-lg drop-shadow-md">AI Prediction</h4>
@@ -304,6 +296,37 @@ function App() {
                 
                 {data?.pred && (
                   <CellMesh vertices={data.pred.vertices} indices={data.pred.indices} color="#9333ea" />
+                )}
+                
+                <SyncedControls />
+              </Canvas>
+            </div>
+          </div>
+
+          {/* BLOCK 2: GROUND TRUTH */}
+          <div className="w-full md:w-1/2 h-[65vh] flex flex-col bg-white/5 border border-white/10 rounded-2xl overflow-hidden relative shadow-2xl">
+            <div className="absolute top-0 w-full p-5 bg-gradient-to-b from-blue-900/50 to-transparent z-10 pointer-events-none">
+              <h4 className="text-blue-400 font-bold tracking-widest uppercase text-lg drop-shadow-md">Ground Truth</h4>
+              <p className="text-white/60 text-xs mt-1">Original Physical Organism</p>
+            </div>
+            
+            <div className="flex-1 relative cursor-move">
+              {!data && !loading && (
+                 <div className="absolute inset-0 flex items-center justify-center text-white/20 pointer-events-none text-xl lowercase font-light tracking-widest">
+                   awaiting selection...
+                 </div>
+              )}
+              {/* Отельный Canvas для GT */}
+              <Canvas camera={{ position: [0, 80, 100], fov: 45 }}>
+                <color attach="background" args={['#050510']} />
+                <ambientLight intensity={0.2} />
+                <pointLight position={[10, 10, 10]} intensity={1.5} color="#8b5cf6" />
+                <pointLight position={[-10, -10, -10]} intensity={1} color="#3b82f6" />
+                <Environment preset="city" />
+                <Stars radius={100} depth={50} count={1000} factor={4} fade />
+                
+                {data?.gt && (
+                  <CellMesh vertices={data.gt.vertices} indices={data.gt.indices} color="#3b82f6" />
                 )}
                 
                 <SyncedControls />
