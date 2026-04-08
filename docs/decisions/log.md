@@ -1,3 +1,10 @@
+---
+title: Architecture Decision Records
+date: 2026-03-23
+tags: [decisions, adr, architecture]
+related: [[docs/architecture/overview]], [[docs/thesis_plan]]
+---
+
 # Лог ключевых решений
 
 ## 1. Отказ от intensity-based layering

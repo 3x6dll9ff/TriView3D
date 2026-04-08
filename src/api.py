@@ -4,6 +4,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from skimage.measure import marching_cubes
+from scipy.spatial import cKDTree
 import sys
 
 # Добавляем корень проекта для правильных импортов
@@ -26,6 +27,11 @@ MODEL_PATH = "results/best_autoencoder.pt"
 
 model = None
 device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 @app.on_event("startup")
 def load_resources():
@@ -71,6 +77,83 @@ def extract_mesh(volume, level=0.5):
     except ValueError:
         return None
 
+
+def compute_overlap_metrics(pred_vol: np.ndarray, gt_vol: np.ndarray) -> dict:
+    """Воксельные метрики перекрытия."""
+    pred_b = (pred_vol > 0.5).astype(np.float32)
+    gt_b = (gt_vol > 0.5).astype(np.float32)
+
+    tp = float(np.sum(pred_b * gt_b))
+    fp = float(np.sum(pred_b * (1.0 - gt_b)))
+    fn = float(np.sum((1.0 - pred_b) * gt_b))
+
+    dice = (2.0 * tp + 1.0) / (2.0 * tp + fp + fn + 1.0)
+    iou = (tp + 1.0) / (tp + fp + fn + 1.0)
+    precision = tp / (tp + fp + 1e-8)
+    recall = tp / (tp + fn + 1e-8)
+
+    pred_voxels = float(np.sum(pred_b))
+    gt_voxels = float(np.sum(gt_b))
+    volume_diff_pct = (
+        abs(pred_voxels - gt_voxels) / (gt_voxels + 1e-8) * 100.0
+    )
+
+    return {
+        "dice": round(float(dice), 4),
+        "iou": round(float(iou), 4),
+        "precision": round(float(precision), 4),
+        "recall": round(float(recall), 4),
+        "volume_diff_pct": round(float(volume_diff_pct), 2),
+    }
+
+
+def compute_surface_similarity(pred_mesh: dict | None, gt_mesh: dict | None) -> dict | None:
+    """Метрики поверхности по вершинам mesh: ASSD, HD95 и производная similarity."""
+    if not pred_mesh or not gt_mesh:
+        return None
+
+    pred_v = np.array(pred_mesh["vertices"], dtype=np.float32).reshape(-1, 3)
+    gt_v = np.array(gt_mesh["vertices"], dtype=np.float32).reshape(-1, 3)
+
+    if len(pred_v) < 10 or len(gt_v) < 10:
+        return None
+
+    max_points = 10000
+    if len(pred_v) > max_points:
+        idx = np.random.choice(len(pred_v), max_points, replace=False)
+        pred_v = pred_v[idx]
+    if len(gt_v) > max_points:
+        idx = np.random.choice(len(gt_v), max_points, replace=False)
+        gt_v = gt_v[idx]
+
+    tree_pred = cKDTree(pred_v)
+    tree_gt = cKDTree(gt_v)
+
+    # d_gt_to_pred: для каждой точки GT расстояние до ближайшей точки Pred
+    # d_pred_to_gt: для каждой точки Pred расстояние до ближайшей точки GT
+    d_gt_to_pred, _ = tree_pred.query(gt_v, k=1)
+    d_pred_to_gt, _ = tree_gt.query(pred_v, k=1)
+
+    # ASSD = среднее симметричное поверхностное расстояние (в воксельных единицах)
+    assd = float((d_gt_to_pred.mean() + d_pred_to_gt.mean()) / 2.0)
+
+    # HD95 = 95-й перцентиль симметричного Hausdorff (устойчивее к выбросам)
+    hd95 = float(
+        max(
+            np.percentile(d_gt_to_pred, 95),
+            np.percentile(d_pred_to_gt, 95),
+        )
+    )
+
+    # Псевдо-нормированная похожесть: 1/(1+ASSD), ближе к 1 при меньшей ошибке.
+    surface_similarity = float(1.0 / (1.0 + assd))
+
+    return {
+        "surface_assd": round(assd, 4),
+        "surface_hd95": round(hd95, 4),
+        "surface_similarity": round(float(surface_similarity), 4),
+    }
+
 @app.post("/api/predict/{filename}")
 def predict(filename: str):
     """Принимает имя файла, прогоняет через PyTorch автоэнкодер и отдает обратно две 3D-модели."""
@@ -100,17 +183,25 @@ def predict(filename: str):
         gt_vol = np.load(gt_path)
         gt_mesh = extract_mesh(gt_vol)
         
-    # Вычисление Dice на лету
-    dice = 0.0
+    # Воксельные и поверхностные метрики
+    overlap_metrics = {
+        "dice": 0.0,
+        "iou": 0.0,
+        "precision": 0.0,
+        "recall": 0.0,
+        "volume_diff_pct": 0.0,
+    }
+    surface_metrics = None
     if os.path.exists(gt_path):
-        pred_b = (pred_vol > 0.5).astype(np.float32)
-        gt_b = (gt_vol > 0.5).astype(np.float32)
-        inter = np.sum(pred_b * gt_b)
-        union = np.sum(pred_b) + np.sum(gt_b)
-        dice = (2.0 * inter + 1) / (union + 1)
+        overlap_metrics = compute_overlap_metrics(pred_vol, gt_vol)
+        surface_metrics = compute_surface_similarity(pred_mesh, gt_mesh)
         
     return {
-        "dice": round(dice, 4),
+        "dice": overlap_metrics["dice"],  # backward compatibility для старого UI
+        "metrics": {
+            **overlap_metrics,
+            **(surface_metrics or {}),
+        },
         "pred": pred_mesh,
         "gt": gt_mesh
     }

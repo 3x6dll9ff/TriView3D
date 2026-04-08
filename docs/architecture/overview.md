@@ -1,3 +1,10 @@
+---
+title: Architecture Overview
+date: 2026-03-23
+tags: [architecture, pipeline, models]
+related: [[docs/thesis_plan]], [[docs/decisions/log]], [[knowledge/glossary]]
+---
+
 # Архитектура пайплайна
 
 ## Общая схема

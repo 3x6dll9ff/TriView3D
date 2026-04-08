@@ -1,0 +1,44 @@
+# Git & version control
+.git
+.gitignore
+
+# OS
+.DS_Store
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Frontend (built separately)
+frontend/node_modules/
+frontend/dist/
+
+# Data & results (mounted as volumes)
+data/
+results/
+*.zip
+
+# Documentation & notebooks
+docs/
+notebooks/
+knowledge/
+
+# IDE & tools
+.vscode/
+.idea/
+.obsidian/
+.smart-env/
+
+# Agent config
+.agent/
+
+# Misc
+*.md
+!requirements.txt

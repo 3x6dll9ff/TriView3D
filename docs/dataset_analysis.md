@@ -1,3 +1,10 @@
+---
+title: Dataset Analysis
+date: 2026-03-23
+tags: [data, shapr, analysis]
+related: [[docs/thesis_plan]], [[knowledge/glossary]]
+---
+
 # SHAPR Dataset — Анализ
 
 ## Источник

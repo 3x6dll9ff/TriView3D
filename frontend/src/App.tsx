@@ -47,6 +47,8 @@ function SyncedControls() {
 
 import './index.css' // We will add glassmorphism styles here
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || ''
+
 function CellMesh({ vertices, indices, position, color }: any) {
   const geometry = useMemo(() => {
     if (!vertices || !indices || vertices.length === 0) return null
@@ -126,13 +128,13 @@ function App() {
 
   useEffect(() => {
     // Fetch available cells
-    axios.get('http://localhost:8000/api/cells').then(res => {
+    axios.get(`${API_BASE_URL}/api/cells`).then(res => {
       setCells(res.data.cells)
       if (res.data.cells.length > 0) setSelectedCell(res.data.cells[0].filename)
     }).catch(console.error)
 
     // Fetch metrics history
-    axios.get('http://localhost:8000/api/metrics').then(res => {
+    axios.get(`${API_BASE_URL}/api/metrics`).then(res => {
       if (res.data && res.data.train_loss) {
         // Transform { train_loss: [], test_loss: [], ... } to array of objects for Recharts
         const len = res.data.train_loss.length;
@@ -151,7 +153,7 @@ function App() {
   // Постоянно подгружать превью проекций при смене выбранной молекулы
   useEffect(() => {
     if (!selectedCell) return
-    axios.get(`http://localhost:8000/api/preview/${selectedCell}`)
+    axios.get(`${API_BASE_URL}/api/preview/${selectedCell}`)
       .then(res => setPreviewImages(res.data))
       .catch(console.error)
   }, [selectedCell])
@@ -160,7 +162,7 @@ function App() {
     if (!selectedCell) return
     setLoading(true)
     try {
-      const res = await axios.post(`http://localhost:8000/api/predict/${selectedCell}`)
+      const res = await axios.post(`${API_BASE_URL}/api/predict/${selectedCell}`)
       setData(res.data)
     } catch (e) {
       console.error(e)
@@ -169,6 +171,65 @@ function App() {
       setLoading(false)
     }
   }
+
+  const metricCards = data ? [
+    {
+      key: 'dice',
+      label: 'VOXEL DICE',
+      value: data.metrics?.dice ?? data.dice ?? '-',
+      color: 'text-green-400',
+      tooltip: 'Dice: пересечение объёмов предсказания и эталона. 1.0 = идеально, 0 = нет пересечения.',
+    },
+    {
+      key: 'iou',
+      label: 'IOU',
+      value: data.metrics?.iou ?? '-',
+      color: 'text-cyan-300',
+      tooltip: 'IoU (Intersection over Union): доля пересечения от объединения объёмов. Более строгая, чем Dice.',
+    },
+    {
+      key: 'precision',
+      label: 'PRECISION',
+      value: data.metrics?.precision ?? '-',
+      color: 'text-sky-300',
+      tooltip: 'Precision: какая доля предсказанных вокселей действительно относится к объекту.',
+    },
+    {
+      key: 'recall',
+      label: 'RECALL',
+      value: data.metrics?.recall ?? '-',
+      color: 'text-emerald-300',
+      tooltip: 'Recall: какую долю вокселей эталонного объекта модель смогла восстановить.',
+    },
+    {
+      key: 'surface_assd',
+      label: 'SURFACE ASSD',
+      value: data.metrics?.surface_assd ?? '-',
+      color: 'text-violet-300',
+      tooltip: 'ASSD: среднее расстояние между поверхностями (в вокселях). Чем меньше, тем лучше.',
+    },
+    {
+      key: 'surface_hd95',
+      label: 'SURFACE HD95',
+      value: data.metrics?.surface_hd95 ?? '-',
+      color: 'text-fuchsia-300',
+      tooltip: 'HD95: 95-й перцентиль поверхностной ошибки (в вокселях). Показывает большие локальные расхождения.',
+    },
+    {
+      key: 'surface_similarity',
+      label: 'SURFACE SIM',
+      value: data.metrics?.surface_similarity ?? '-',
+      color: 'text-purple-300',
+      tooltip: 'Surface Similarity: нормированная оценка из ASSD (1/(1+ASSD)). Ближе к 1 — ближе поверхности.',
+    },
+    {
+      key: 'volume_diff_pct',
+      label: 'VOL DIFF %',
+      value: data.metrics?.volume_diff_pct ?? '-',
+      color: 'text-amber-300',
+      tooltip: 'Vol Diff %: относительная разница объёма предсказания и эталона. Чем ближе к 0%, тем лучше.',
+    },
+  ] : []
 
   return (
     <div className="w-full h-screen bg-black text-white flex overflow-hidden font-sans">
@@ -230,12 +291,6 @@ function App() {
               {loading ? "Running Neural Inference..." : "✨ Generate 3D Model"}
             </button>
 
-            {data && (
-              <div className="w-full xl:w-auto mt-6 xl:mt-0 pl-0 xl:pl-6 border-t xl:border-t-0 xl:border-l border-white/10 flex flex-col justify-center min-w-[150px]">
-                <span className="text-xs text-gray-400 uppercase tracking-widest mb-1">Dice Similarity</span>
-                <span className="text-2xl font-mono text-green-400 leading-none">{data.dice}</span>
-              </div>
-            )}
           </div>
 
           {/* PREVIEW IMAGES ROW */}
@@ -262,6 +317,16 @@ function App() {
           {/* 3D VIEWPORTS (ONLY SHOWN WHEN GENERATED) */}
           {(loading || data) && (
             <div className="flex flex-col w-full flex-1">
+              {data && (
+                <div className="w-full mb-4 bg-white/5 border border-white/10 rounded-xl p-4 grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-3">
+                  {metricCards.map((m: any) => (
+                    <div key={m.key} className="flex flex-col" title={m.tooltip}>
+                      <span className="text-xs text-gray-400 uppercase tracking-widest mb-1">{m.label}</span>
+                      <span className={`text-xl font-mono leading-none ${m.color}`}>{m.value}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
               <div className="text-purple-400/50 text-xs text-center font-mono tracking-widest uppercase mb-4 mt-2">
                 Pan: Right Click &nbsp;|&nbsp; Rotate: Left Click &nbsp;|&nbsp; Zoom: Scroll
               </div>
