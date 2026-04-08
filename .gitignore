@@ -58,18 +58,15 @@ Thumbs.db
 *.local
 
 # ===========================
-# Obsidian (runtime state only)
+# Obsidian (entire config)
 # ===========================
-.obsidian/workspace.json
-.obsidian/plugins/
+.obsidian/
 .smart-env/
 
 # ===========================
-# AI Agent (runtime state only)
+# AI Agent (entire config)
 # ===========================
-.agent/memory/*.json
-.agent/memory/*.db
-.agent/**/*.env
+.agent/
 
 # ===========================
 # Environment & secrets
