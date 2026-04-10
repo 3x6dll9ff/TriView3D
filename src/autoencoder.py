@@ -79,7 +79,7 @@ class Decoder3D(nn.Module):
             nn.ReLU(inplace=True),
             # 32×32×32×32 → 1×64×64×64
             nn.ConvTranspose3d(32, 1, 4, stride=2, padding=1),
-            nn.Sigmoid(),
+            # Sigmoid удален для стабильности (используем BCEWithLogitsLoss)
         )
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
@@ -134,7 +134,8 @@ class SingleViewAutoencoder(nn.Module):
 
 def dice_loss(pred: torch.Tensor, target: torch.Tensor, smooth: float = 1.0) -> torch.Tensor:
     """Dice loss для бинарной 3D сегментации."""
-    pred_flat = pred.contiguous().view(-1)
+    pred_prob = torch.sigmoid(pred)
+    pred_flat = pred_prob.contiguous().view(-1)
     target_flat = target.contiguous().view(-1)
 
     intersection = (pred_flat * target_flat).sum()
@@ -159,7 +160,7 @@ def boundary_bce_loss(
 ) -> torch.Tensor:
     mask = boundary_mask(target)
     weights = 1.0 + boundary_boost * mask
-    return F.binary_cross_entropy(pred, target, weight=weights, reduction="mean")
+    return F.binary_cross_entropy_with_logits(pred, target, weight=weights, reduction="mean")
 
 
 def projection_consistency_loss(
@@ -167,7 +168,7 @@ def projection_consistency_loss(
     inputs: torch.Tensor,
     view_names: tuple[str, ...],
 ) -> torch.Tensor:
-    projected = project_volume_batch(pred, view_names)
+    projected = project_volume_batch(torch.sigmoid(pred), view_names)
     return F.l1_loss(projected, inputs, reduction="mean")
 
 
@@ -184,7 +185,7 @@ def reconstruction_loss(
     return_components: bool = False,
 ) -> torch.Tensor | tuple[torch.Tensor, dict[str, float]]:
     """Комбинированный loss для multi-view 3D reconstruction."""
-    bce = F.binary_cross_entropy(pred, target, reduction="mean")
+    bce = F.binary_cross_entropy_with_logits(pred, target, reduction="mean")
     dl = dice_loss(pred, target)
     proj = pred.new_tensor(0.0)
     surface = pred.new_tensor(0.0)

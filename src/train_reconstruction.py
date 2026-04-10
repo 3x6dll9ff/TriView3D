@@ -58,7 +58,7 @@ def compute_overlap(
     pred: torch.Tensor,
     target: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    pred_bin = (pred > 0.5).float()
+    pred_bin = (pred > 0).float()
     intersection = (pred_bin * target).sum(dim=(1, 2, 3, 4))
     union = pred_bin.sum(dim=(1, 2, 3, 4)) + target.sum(dim=(1, 2, 3, 4))
     dice = (2.0 * intersection + 1.0) / (union + 1.0)

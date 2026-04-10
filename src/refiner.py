@@ -53,4 +53,4 @@ class DetailRefiner(nn.Module):
         coarse_logits = torch.logit(coarse.clamp(1e-4, 1.0 - 1e-4))
         gating = 0.25 + uncertainty
         refined_logits = coarse_logits + gating * residual_logits
-        return torch.sigmoid(refined_logits)
+        return refined_logits
