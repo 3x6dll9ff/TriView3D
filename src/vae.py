@@ -98,7 +98,7 @@ class TriViewCVAE(nn.Module):
     def generate(self, x: torch.Tensor) -> torch.Tensor:
         """Inference: используем только mu (без шума) для стабильного результата."""
         mu, _ = self.encode(x)
-        return self.decode(mu)
+        return torch.sigmoid(self.decode(mu))
 
 
 # ── VAE Loss ────────────────────────────────────────────────────────
@@ -156,7 +156,7 @@ def best_of_k_generate(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Сэмплирует несколько кандидатов и выбирает лучший по reprojection error."""
     mu, logvar = model.encode(inputs)
-    candidates: list[torch.Tensor] = [model.decode(mu)]
+    candidates: list[torch.Tensor] = [torch.sigmoid(model.decode(mu))]
     scores: list[torch.Tensor] = [
         F.l1_loss(project_volume_batch(candidates[0], view_names), inputs, reduction="none")
         .mean(dim=(1, 2, 3))
@@ -164,7 +164,7 @@ def best_of_k_generate(
 
     for _ in range(max(num_samples - 1, 0)):
         z = model.reparameterize(mu, logvar)
-        candidate = model.decode(z)
+        candidate = torch.sigmoid(model.decode(z))
         score = F.l1_loss(project_volume_batch(candidate, view_names), inputs, reduction="none")
         scores.append(score.mean(dim=(1, 2, 3)))
         candidates.append(candidate)

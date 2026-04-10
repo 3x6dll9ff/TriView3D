@@ -157,7 +157,7 @@ def evaluate(
         total_loss += loss.item() * inputs.size(0)
         total_projection += float(best_score.sum().item())
 
-        pred_bin = (pred > 0).float()
+        pred_bin = (pred > 0.5).float()
         intersection = (pred_bin * target_3d).sum(dim=(1, 2, 3, 4))
         union = pred_bin.sum(dim=(1, 2, 3, 4)) + target_3d.sum(dim=(1, 2, 3, 4))
 
