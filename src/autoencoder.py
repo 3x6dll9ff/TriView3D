@@ -38,6 +38,7 @@ class Encoder2D(nn.Module):
         )
         self.fc = nn.Sequential(
             nn.Flatten(),
+            nn.Dropout(0.3),
             nn.Linear(256 * 4 * 4, latent_dim),
             nn.ReLU(inplace=True),
         )
@@ -56,6 +57,7 @@ class Decoder3D(nn.Module):
         self.fc = nn.Sequential(
             nn.Linear(latent_dim, 256 * 4 * 4 * 4),
             nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
         )
         self.deconv = nn.Sequential(
             # 256×4×4×4 → 128×8×8×8

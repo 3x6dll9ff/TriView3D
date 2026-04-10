@@ -8,13 +8,17 @@
 import argparse
 import json
 import os
+import sys
 import time
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 from torch.utils.data import DataLoader
+from torch.cuda.amp import GradScaler, autocast
 
-from autoencoder import TriViewAutoencoder, SingleViewAutoencoder, reconstruction_loss
-from dataset import CellTriViewDataset
+from src.autoencoder import TriViewAutoencoder, SingleViewAutoencoder, reconstruction_loss
+from src.dataset import CellTriViewDataset
 
 
 def train_one_epoch(
@@ -22,20 +26,33 @@ def train_one_epoch(
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
+    scaler: GradScaler | None = None,
 ) -> float:
     model.train()
     total_loss = 0.0
 
     for batch in loader:
-        inputs = batch["input"].to(device)
-        target_3d = batch["target_3d"].to(device)
+        inputs = batch["input"].to(device, non_blocking=True)
+        target_3d = batch["target_3d"].to(device, non_blocking=True)
 
-        pred = model(inputs)
-        loss = reconstruction_loss(pred, target_3d)
+        optimizer.zero_grad(set_to_none=True)
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        # Использование AMP для ускорения GPU
+        if scaler is not None and device.type == "cuda":
+            with autocast():
+                pred = model(inputs)
+                loss = reconstruction_loss(pred, target_3d)
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            pred = model(inputs)
+            loss = reconstruction_loss(pred, target_3d)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
 
         total_loss += loss.item() * inputs.size(0)
 
@@ -55,8 +72,8 @@ def evaluate(
     n = 0
 
     for batch in loader:
-        inputs = batch["input"].to(device)
-        target_3d = batch["target_3d"].to(device)
+        inputs = batch["input"].to(device, non_blocking=True)
+        target_3d = batch["target_3d"].to(device, non_blocking=True)
 
         pred = model(inputs)
         loss = reconstruction_loss(pred, target_3d)
@@ -103,11 +120,15 @@ def train(
 
     print(f"Train: {len(train_ds)}, Test: {len(test_ds)}")
 
+    # Оптимизация DataLoader: воркеры и pin_memory
+    num_workers = min(4, os.cpu_count() or 1)
     train_loader = DataLoader(
-        train_ds, batch_size=batch_size, shuffle=True, num_workers=0
+        train_ds, batch_size=batch_size, shuffle=True, 
+        num_workers=num_workers, pin_memory=True
     )
     test_loader = DataLoader(
-        test_ds, batch_size=batch_size, shuffle=False, num_workers=0
+        test_ds, batch_size=batch_size, shuffle=False, 
+        num_workers=num_workers, pin_memory=True
     )
 
     # Модель
@@ -120,14 +141,20 @@ def train(
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Параметры модели: {n_params:,}")
 
+    scaler = GradScaler() if device.type == "cuda" else None
+
     # Обучение
     os.makedirs(os.path.join(output_dir, "metrics"), exist_ok=True)
     history = {"train_loss": [], "test_loss": [], "test_dice": [], "test_iou": []}
     best_dice = 0.0
+    
+    # Early Stopping setup
+    patience_counter = 0
+    patience_limit = 10
 
     for epoch in range(1, epochs + 1):
         t0 = time.time()
-        train_loss = train_one_epoch(model, train_loader, optimizer, device)
+        train_loss = train_one_epoch(model, train_loader, optimizer, device, scaler)
         test_metrics = evaluate(model, test_loader, device)
 
         scheduler.step(test_metrics["loss"])
@@ -150,13 +177,12 @@ def train(
         # Сохранение лучшей модели
         if test_metrics["dice"] > best_dice:
             best_dice = test_metrics["dice"]
+            patience_counter = 0
             torch.save(
                 model.state_dict(),
                 os.path.join(output_dir, "best_autoencoder.pt"),
             )
-
-        # Checkpoint каждые 10 эпох
-        if epoch % 10 == 0:
+            # Чекоинт для дообучения
             torch.save(
                 {
                     "epoch": epoch,
@@ -164,8 +190,14 @@ def train(
                     "optimizer_state_dict": optimizer.state_dict(),
                     "best_dice": best_dice,
                 },
-                os.path.join(output_dir, f"checkpoint_epoch{epoch}.pt"),
+                os.path.join(output_dir, "checkpoint_best.pt"),
             )
+        else:
+            patience_counter += 1
+
+        if patience_counter >= patience_limit:
+            print(f"\\nEarly stopping triggered: 0 improvement for {patience_limit} epochs.")
+            break
 
     # Сохранение истории
     history_path = os.path.join(output_dir, "metrics", "reconstruction_history.json")
