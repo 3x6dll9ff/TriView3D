@@ -1,16 +1,21 @@
 """
-Tri-View 3D Autoencoder: из 3 проекций (top + front + side) предсказывает 3D форму.
+Multi-View 3D Autoencoder: из 3/4 проекций предсказывает 3D форму.
 
-Архитектура:
-  Encoder: 2D ConvNet [3, 64, 64] → latent vector (256-dim)
-  Decoder: 3D ConvTranspose → output [1, 64, 64, 64]
-
-Loss: BCE + Dice для бинарной 3D реконструкции.
+Loss включает:
+  - voxel BCE
+  - Dice
+  - projection consistency
+  - boundary-aware BCE
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+try:
+    from src.reconstruction_utils import project_volume_batch
+except ImportError:
+    from reconstruction_utils import project_volume_batch
 
 
 class Encoder2D(nn.Module):
@@ -91,11 +96,12 @@ class TriViewAutoencoder(nn.Module):
     Output: [batch, 1, 64, 64, 64] — predicted 3D shape
     """
 
-    def __init__(self, latent_dim: int = 256) -> None:
+    def __init__(self, latent_dim: int = 256, in_channels: int = 3) -> None:
         super().__init__()
-        self.encoder = Encoder2D(in_channels=3, latent_dim=latent_dim)
+        self.encoder = Encoder2D(in_channels=in_channels, latent_dim=latent_dim)
         self.decoder = Decoder3D(latent_dim=latent_dim)
         self.latent_dim = latent_dim
+        self.in_channels = in_channels
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         z = self.encoder(x)
@@ -138,13 +144,70 @@ def dice_loss(pred: torch.Tensor, target: torch.Tensor, smooth: float = 1.0) -> 
     return 1.0 - dice
 
 
+def boundary_mask(target: torch.Tensor) -> torch.Tensor:
+    """Выделяет boundary voxels через разность dilate/erode."""
+    target_bin = (target > 0.5).float()
+    dilated = F.max_pool3d(target_bin, kernel_size=3, stride=1, padding=1)
+    eroded = -F.max_pool3d(-target_bin, kernel_size=3, stride=1, padding=1)
+    return (dilated - eroded > 0).float()
+
+
+def boundary_bce_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    boundary_boost: float = 4.0,
+) -> torch.Tensor:
+    mask = boundary_mask(target)
+    weights = 1.0 + boundary_boost * mask
+    return F.binary_cross_entropy(pred, target, weight=weights, reduction="mean")
+
+
+def projection_consistency_loss(
+    pred: torch.Tensor,
+    inputs: torch.Tensor,
+    view_names: tuple[str, ...],
+) -> torch.Tensor:
+    projected = project_volume_batch(pred, view_names)
+    return F.l1_loss(projected, inputs, reduction="mean")
+
+
 def reconstruction_loss(
     pred: torch.Tensor,
     target: torch.Tensor,
+    inputs: torch.Tensor | None = None,
+    view_names: tuple[str, ...] | None = None,
     bce_weight: float = 0.5,
     dice_weight: float = 0.5,
-) -> torch.Tensor:
-    """Комбинированный loss: BCE + Dice."""
+    projection_weight: float = 0.0,
+    surface_weight: float = 0.0,
+    boundary_boost: float = 4.0,
+    return_components: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, dict[str, float]]:
+    """Комбинированный loss для multi-view 3D reconstruction."""
     bce = F.binary_cross_entropy(pred, target, reduction="mean")
     dl = dice_loss(pred, target)
-    return bce_weight * bce + dice_weight * dl
+    proj = pred.new_tensor(0.0)
+    surface = pred.new_tensor(0.0)
+
+    if inputs is not None and view_names is not None and projection_weight > 0:
+        proj = projection_consistency_loss(pred, inputs, view_names)
+
+    if surface_weight > 0:
+        surface = boundary_bce_loss(pred, target, boundary_boost=boundary_boost)
+
+    total = (
+        bce_weight * bce
+        + dice_weight * dl
+        + projection_weight * proj
+        + surface_weight * surface
+    )
+
+    if return_components:
+        return total, {
+            "bce": float(bce.item()),
+            "dice_loss": float(dl.item()),
+            "projection": float(proj.item()),
+            "surface": float(surface.item()),
+            "total": float(total.item()),
+        }
+    return total

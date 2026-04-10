@@ -161,6 +161,7 @@ function Scene({ meshData, color, label }: {
 // ── Types ────────────────────────────────────────────────────────
 interface CellInfo { filename: string; score: string; type: string }
 interface MetricDef { key: string; label: string; value: number | string; unit?: string }
+type PreviewMap = Record<string, string>
 
 const API = import.meta.env.VITE_API_BASE_URL || ''
 
@@ -168,11 +169,13 @@ const API = import.meta.env.VITE_API_BASE_URL || ''
 function App() {
   const [cells, setCells] = useState<CellInfo[]>([])
   const [selectedCell, setSelectedCell] = useState('')
-  const [data, setData] = useState<any>(null)
+  const [cnnData, setCnnData] = useState<any>(null)
+  const [vaeData, setVaeData] = useState<any>(null)
   const [loading, setLoading] = useState(false)
+  const [vaeAvailable, setVaeAvailable] = useState(false)
   const [tab, setTab] = useState<'predict' | 'metrics'>('predict')
   const [metricsHistory, setMetricsHistory] = useState<any[]>([])
-  const [preview, setPreview] = useState<{ top: string; bottom: string; side: string } | null>(null)
+  const [preview, setPreview] = useState<PreviewMap | null>(null)
 
   useEffect(() => {
     axios.get(`${API}/api/cells`).then(res => {
@@ -181,18 +184,27 @@ function App() {
     }).catch(console.error)
 
     axios.get(`${API}/api/metrics`).then(res => {
-      if (res.data?.train_loss) {
+      const lossKey = res.data?.test_loss ? 'test_loss' : 'val_loss'
+      const diceKey = res.data?.test_dice ? 'test_dice' : 'val_dice'
+      const iouKey = res.data?.test_iou ? 'test_iou' : 'val_iou'
+      if (res.data?.train_loss && res.data?.[lossKey]) {
         setMetricsHistory(
           res.data.train_loss.map((_: number, i: number) => ({
             epoch: i + 1,
             train_loss: res.data.train_loss[i],
-            test_loss: res.data.test_loss[i],
-            test_dice: res.data.test_dice[i],
-            test_iou: res.data.test_iou[i],
+            test_loss: res.data[lossKey][i],
+            test_dice: res.data[diceKey]?.[i],
+            test_iou: res.data[iouKey]?.[i],
+            test_hard_dice: res.data.val_hard_dice?.[i],
           }))
         )
       }
     }).catch(console.error)
+
+    // Проверяем доступность VAE модели через статус бэкенда
+    axios.get(`${API}/api/status`).then(res => {
+      setVaeAvailable(res.data.vae_loaded)
+    }).catch(() => setVaeAvailable(false))
   }, [])
 
   useEffect(() => {
@@ -205,21 +217,32 @@ function App() {
   const handlePredict = useCallback(async () => {
     if (!selectedCell) return
     setLoading(true)
+    setCnnData(null)
+    setVaeData(null)
     try {
-      const res = await axios.post(`${API}/api/predict/${selectedCell}`)
-      setData(res.data)
+      // CNN запрос всегда
+      const cnnPromise = axios.post(`${API}/api/predict/${selectedCell}`)
+      // VAE запрос если модель доступна
+      const vaePromise = vaeAvailable
+        ? axios.post(`${API}/api/predict-vae/${selectedCell}`).catch(() => null)
+        : Promise.resolve(null)
+
+      const [cnnRes, vaeRes] = await Promise.all([cnnPromise, vaePromise])
+      setCnnData(cnnRes.data)
+      if (vaeRes) setVaeData(vaeRes.data)
     } catch {
       alert('Backend error. Is FastAPI running on :8000?')
     } finally {
       setLoading(false)
     }
-  }, [selectedCell])
+  }, [selectedCell, vaeAvailable])
 
-  const metrics: MetricDef[] = data ? [
+  const buildMetrics = (data: any): MetricDef[] => data ? [
     { key: 'dice', label: 'Dice', value: data.metrics?.dice ?? data.dice },
     { key: 'iou', label: 'IoU', value: data.metrics?.iou },
     { key: 'precision', label: 'Precision', value: data.metrics?.precision },
     { key: 'recall', label: 'Recall', value: data.metrics?.recall },
+    { key: 'reproj', label: 'Reproj L1', value: data.metrics?.reprojection_l1 },
     { key: 'assd', label: 'ASSD', value: data.metrics?.surface_assd, unit: 'vox' },
     { key: 'hd95', label: 'HD95', value: data.metrics?.surface_hd95, unit: 'vox' },
     { key: 'sim', label: 'Surface Sim', value: data.metrics?.surface_similarity },
@@ -241,8 +264,15 @@ function App() {
       if (n >= 0.7) return 'metric-ok'
       return 'metric-bad'
     }
+    if (key === 'reproj') {
+      if (n <= 0.03) return 'metric-good'
+      if (n <= 0.06) return 'metric-ok'
+      return 'metric-bad'
+    }
     return ''
   }
+
+  const hasResults = cnnData || vaeData
 
   return (
     <div className="app">
@@ -299,7 +329,7 @@ function App() {
           {/* Projections */}
           {preview && (
             <section className="projections">
-              {(['top', 'bottom', 'side'] as const).map(view => (
+              {(['top', 'bottom', 'side', 'front'] as const).filter(view => preview[view]).map(view => (
                 <div key={view} className="projection-card">
                   <span className="projection-label">{view}</span>
                   <img
@@ -312,21 +342,39 @@ function App() {
             </section>
           )}
 
-          {/* Metrics bar */}
-          {data && (
-            <section className="metrics-bar">
-              {metrics.map(m => (
-                <div key={m.key} className={`metric-item ${getMetricColor(m.key, m.value)}`}>
-                  <span className="metric-label">{m.label}</span>
-                  <span className="metric-value">{formatMetric(m.value, m.unit)}</span>
-                </div>
-              ))}
+          {/* Metrics: CNN row */}
+          {cnnData && (
+            <section className="metrics-section">
+              <div className="metrics-header">CNN Autoencoder</div>
+              <div className="metrics-bar">
+                {buildMetrics(cnnData).map(m => (
+                  <div key={m.key} className={`metric-item ${getMetricColor(m.key, m.value)}`}>
+                    <span className="metric-label">{m.label}</span>
+                    <span className="metric-value">{formatMetric(m.value, m.unit)}</span>
+                  </div>
+                ))}
+              </div>
             </section>
           )}
 
-          {/* 3D Viewports */}
-          {(loading || data) && (
-            <section className="viewports">
+          {/* Metrics: VAE row */}
+          {vaeData && (
+            <section className="metrics-section">
+              <div className="metrics-header">Generative VAE</div>
+              <div className="metrics-bar">
+                {buildMetrics(vaeData).map(m => (
+                  <div key={m.key} className={`metric-item ${getMetricColor(m.key, m.value)}`}>
+                    <span className="metric-label">{m.label}</span>
+                    <span className="metric-value">{formatMetric(m.value, m.unit)}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* 3D Viewports: CNN | VAE | Ground Truth */}
+          {(loading || hasResults) && (
+            <section className={`viewports ${vaeData ? 'viewports-3' : ''}`}>
               <div className="viewport">
                 {loading && (
                   <div className="viewport-loading">
@@ -334,14 +382,23 @@ function App() {
                   </div>
                 )}
                 <Scene
-                  meshData={data?.pred}
+                  meshData={cnnData?.pred}
                   color="#d8b4fe"
-                  label="Prediction"
+                  label="CNN Prediction"
                 />
               </div>
+              {vaeData && (
+                <div className="viewport">
+                  <Scene
+                    meshData={vaeData?.pred}
+                    color="#c4b5fd"
+                    label="VAE Generation"
+                  />
+                </div>
+              )}
               <div className="viewport">
                 <Scene
-                  meshData={data?.gt}
+                  meshData={cnnData?.gt}
                   color="#a5d8ff"
                   label="Ground Truth"
                 />
@@ -349,7 +406,7 @@ function App() {
             </section>
           )}
 
-          {!data && !loading && (
+          {!hasResults && !loading && (
             <div className="empty-state">
               Select a cell sample and click <strong>Predict 3D Shape</strong> to begin
             </div>
@@ -394,6 +451,7 @@ function App() {
                   />
                   <Legend iconType="circle" />
                   <Line type="monotone" name="Dice Score" dataKey="test_dice" stroke="#a855f7" strokeWidth={2} dot={false} />
+                  <Line type="monotone" name="Hard Dice" dataKey="test_hard_dice" stroke="#f59e0b" strokeWidth={2} dot={false} />
                   <Line type="monotone" name="IoU" dataKey="test_iou" stroke="#10b981" strokeWidth={2} dot={false} />
                 </LineChart>
               </ResponsiveContainer>

@@ -23,6 +23,11 @@ from autoencoder import TriViewAutoencoder
 from classifier import LatentClassifier, MorphometryRFClassifier
 from dataset import CellTriViewDataset
 
+try:
+    from src.reconstruction_utils import infer_in_channels_from_state_dict
+except ImportError:
+    from reconstruction_utils import infer_in_channels_from_state_dict
+
 
 def train_random_forest(data_dir: str, output_dir: str) -> None:
     """Обучение Random Forest на морфометрических метриках."""
@@ -75,6 +80,7 @@ def train_latent_classifier(
     data_dir: str,
     autoencoder_path: str,
     output_dir: str,
+    input_mode: str = "quad",
     epochs: int = 30,
     batch_size: int = 16,
     lr: float = 1e-3,
@@ -91,14 +97,18 @@ def train_latent_classifier(
         device = torch.device("cpu")
 
     # Загрузка autoencoder
-    autoencoder = TriViewAutoencoder(latent_dim=latent_dim).to(device)
-    autoencoder.load_state_dict(torch.load(autoencoder_path, map_location=device))
+    checkpoint = torch.load(autoencoder_path, map_location=device)
+    state_dict = checkpoint.get("model_state_dict", checkpoint)
+    in_channels = infer_in_channels_from_state_dict(state_dict)
+    latent_dim = int(state_dict["encoder.fc.1.weight"].shape[0])
+    autoencoder = TriViewAutoencoder(latent_dim=latent_dim, in_channels=in_channels).to(device)
+    autoencoder.load_state_dict(state_dict)
     autoencoder.eval()
     print(f"Autoencoder загружен: {autoencoder_path}")
 
     # Данные
-    train_ds = CellTriViewDataset(data_dir, split="train")
-    test_ds = CellTriViewDataset(data_dir, split="test")
+    train_ds = CellTriViewDataset(data_dir, split="train", input_mode=input_mode)
+    test_ds = CellTriViewDataset(data_dir, split="test", input_mode=input_mode)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
 
@@ -176,6 +186,7 @@ def main():
         "--mode", type=str, default="rf", choices=["rf", "latent"]
     )
     parser.add_argument("--autoencoder", type=str, default="results/best_autoencoder.pt")
+    parser.add_argument("--input_mode", type=str, default="quad", choices=["tri", "quad"])
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-3)
@@ -186,7 +197,7 @@ def main():
         train_random_forest(args.data_dir, args.output_dir)
     else:
         train_latent_classifier(
-            args.data_dir, args.autoencoder, args.output_dir,
+            args.data_dir, args.autoencoder, args.output_dir, args.input_mode,
             args.epochs, args.batch_size, args.lr, args.latent_dim,
         )
 

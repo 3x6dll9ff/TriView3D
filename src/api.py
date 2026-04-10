@@ -10,6 +10,9 @@ import sys
 # Добавляем корень проекта для правильных импортов
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.autoencoder import TriViewAutoencoder
+from src.refiner import DetailRefiner
+from src.reconstruction_utils import get_view_names, infer_in_channels_from_state_dict, lift_views_to_volume, project_volume_batch
+from src.vae import TriViewCVAE, best_of_k_generate
 
 app = FastAPI(title="3D Cell Reconstruction API")
 
@@ -24,26 +27,85 @@ app.add_middleware(
 
 DATA_DIR = "data/processed"
 MODEL_PATH = "results/best_autoencoder.pt"
+VAE_MODEL_PATH = "results/best_vae.pt"
+REFINER_PATH = "results/best_refiner.pt"
 
 model = None
+vae_model = None
+refiner_model = None
+model_view_names = get_view_names("tri")
+vae_view_names = get_view_names("tri")
 device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+
+
+def unwrap_state_dict(checkpoint):
+    return checkpoint.get("model_state_dict", checkpoint)
+
+
+def infer_view_names(state_dict):
+    in_channels = infer_in_channels_from_state_dict(state_dict)
+    return get_view_names("quad" if in_channels == 4 else "tri")
+
+
+def load_input_views(filename: str, view_names: tuple[str, ...]) -> np.ndarray:
+    projections = []
+    for view_name in view_names:
+        path = os.path.join(DATA_DIR, view_name, filename)
+        if not os.path.exists(path):
+            raise FileNotFoundError(path)
+        projections.append(np.load(path))
+    return np.stack(projections, axis=0).astype(np.float32)
 
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
+@app.get("/api/status")
+def get_status():
+    return {
+        "cnn_loaded": model is not None,
+        "vae_loaded": vae_model is not None,
+        "refiner_loaded": refiner_model is not None,
+    }
+
 @app.on_event("startup")
 def load_resources():
-    global model
+    global model, vae_model, refiner_model, model_view_names, vae_view_names
     if os.path.exists(MODEL_PATH):
-        print(f"Загрузка модели на {device}...")
-        model = TriViewAutoencoder(latent_dim=256).to(device)
-        model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+        print(f"Загрузка CNN модели на {device}...")
+        checkpoint = torch.load(MODEL_PATH, map_location=device)
+        state_dict = unwrap_state_dict(checkpoint)
+        model_view_names = infer_view_names(state_dict)
+        latent_dim = int(state_dict["encoder.fc.1.weight"].shape[0])
+        model = TriViewAutoencoder(latent_dim=latent_dim, in_channels=len(model_view_names)).to(device)
+        model.load_state_dict(state_dict)
         model.eval()
-        print("Готово!")
+        print("CNN модель загружена.")
     else:
-        print("ПРЕДУПРЕЖДЕНИЕ: Файл модели не найден.")
+        print("ПРЕДУПРЕЖДЕНИЕ: CNN модель не найдена.")
+
+    if model is not None and os.path.exists(REFINER_PATH):
+        print(f"Загрузка refiner модели на {device}...")
+        refiner_model = DetailRefiner(view_channels=len(model_view_names)).to(device)
+        refiner_model.load_state_dict(torch.load(REFINER_PATH, map_location=device))
+        refiner_model.eval()
+        print("Refiner модель загружена.")
+    else:
+        print("ПРЕДУПРЕЖДЕНИЕ: Refiner модель не найдена.")
+
+    if os.path.exists(VAE_MODEL_PATH):
+        print(f"Загрузка VAE модели на {device}...")
+        checkpoint = torch.load(VAE_MODEL_PATH, map_location=device)
+        state_dict = unwrap_state_dict(checkpoint)
+        vae_view_names = infer_view_names(state_dict)
+        latent_dim = int(state_dict["fc_mu.weight"].shape[0])
+        vae_model = TriViewCVAE(latent_dim=latent_dim, in_channels=len(vae_view_names)).to(device)
+        vae_model.load_state_dict(state_dict)
+        vae_model.eval()
+        print("VAE модель загружена.")
+    else:
+        print("ПРЕДУПРЕЖДЕНИЕ: VAE модель не найдена (обучите через train_vae.py).")
 
 @app.get("/api/cells")
 def get_cells():
@@ -159,23 +221,27 @@ def predict(filename: str):
     """Принимает имя файла, прогоняет через PyTorch автоэнкодер и отдает обратно две 3D-модели."""
     if not model:
         raise HTTPException(status_code=500, detail="Модель не загружена.")
-        
+
     try:
-        top = np.load(os.path.join(DATA_DIR, "top_proj", filename))
-        bottom = np.load(os.path.join(DATA_DIR, "bottom_proj", filename))
-        side = np.load(os.path.join(DATA_DIR, "side_proj", filename))
-    except Exception as e:
+        multi_view_input = load_input_views(filename, model_view_names)
+    except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Файлы проекций не найдены.")
-        
-    # Инференс (предсказание 3D формы по 3-м плоским фото)
-    tri_input = np.stack([top, bottom, side], axis=0)
-    tri_tensor = torch.tensor(tri_input, dtype=torch.float32).unsqueeze(0).to(device)
-    
+
+    tri_tensor = torch.tensor(multi_view_input, dtype=torch.float32).unsqueeze(0).to(device)
+
     with torch.no_grad():
-        pred_vol = model(tri_tensor)[0, 0].cpu().numpy()
-        
+        coarse_tensor = model(tri_tensor)
+        coarse_vol = coarse_tensor[0, 0].cpu().numpy()
+        pred_tensor = coarse_tensor
+        if refiner_model is not None:
+            lifted_views = lift_views_to_volume(tri_tensor, model_view_names)
+            pred_tensor = refiner_model(coarse_tensor, lifted_views)
+        pred_vol = pred_tensor[0, 0].cpu().numpy()
+        reprojection_l1 = float(torch.abs(project_volume_batch(pred_tensor, model_view_names) - tri_tensor).mean().item())
+
     pred_mesh = extract_mesh(pred_vol)
-    
+    coarse_mesh = extract_mesh(coarse_vol) if refiner_model is not None else None
+
     # Чтение Ground Truth для сравнения
     gt_mesh = None
     gt_path = os.path.join(DATA_DIR, "obj", filename)
@@ -201,8 +267,10 @@ def predict(filename: str):
         "metrics": {
             **overlap_metrics,
             **(surface_metrics or {}),
+            "reprojection_l1": round(reprojection_l1, 4),
         },
         "pred": pred_mesh,
+        "coarse": coarse_mesh,
         "gt": gt_mesh
     }
 
@@ -239,17 +307,21 @@ def numpy_to_b64_png(arr):
 
 @app.get("/api/preview/{filename}")
 def preview_projections(filename: str):
-    """Возвращает 3 проекции в виде base64 png для предпросмотра на UI."""
+    """Возвращает доступные проекции в виде base64 png для предпросмотра на UI."""
     try:
-        top = np.load(os.path.join(DATA_DIR, "top_proj", filename))
-        bottom = np.load(os.path.join(DATA_DIR, "bottom_proj", filename))
-        side = np.load(os.path.join(DATA_DIR, "side_proj", filename))
-        
-        return {
-            "top": numpy_to_b64_png(top),
-            "bottom": numpy_to_b64_png(bottom),
-            "side": numpy_to_b64_png(side)
-        }
+        response = {}
+        for short_name, view_name in [
+            ("top", "top_proj"),
+            ("bottom", "bottom_proj"),
+            ("side", "side_proj"),
+            ("front", "front_proj"),
+        ]:
+            path = os.path.join(DATA_DIR, view_name, filename)
+            if os.path.exists(path):
+                response[short_name] = numpy_to_b64_png(np.load(path))
+        if not response:
+            raise FileNotFoundError(filename)
+        return response
     except Exception as e:
         raise HTTPException(status_code=404, detail=f"Не удалось загрузить проекции: {str(e)}")
 
@@ -264,6 +336,60 @@ def get_metrics():
         except Exception as e:
             return {"error": str(e)}
     return {"error": "History file not found."}
+
+
+@app.post("/api/predict-vae/{filename}")
+def predict_vae(filename: str):
+    """Инференс VAE модели — generative подход к реконструкции."""
+    if not vae_model:
+        raise HTTPException(status_code=500, detail="VAE модель не загружена. Обучите через train_vae.py.")
+
+    try:
+        multi_view_input = load_input_views(filename, vae_view_names)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Файлы проекций не найдены.")
+
+    tri_tensor = torch.tensor(multi_view_input, dtype=torch.float32).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        pred_tensor, best_score = best_of_k_generate(vae_model, tri_tensor, vae_view_names, num_samples=8)
+        pred_vol = pred_tensor[0, 0].cpu().numpy()
+
+    pred_mesh = extract_mesh(pred_vol)
+
+    gt_mesh = None
+    gt_path = os.path.join(DATA_DIR, "obj", filename)
+    overlap_metrics = {"dice": 0.0, "iou": 0.0, "precision": 0.0, "recall": 0.0, "volume_diff_pct": 0.0}
+    surface_metrics = None
+
+    if os.path.exists(gt_path):
+        gt_vol = np.load(gt_path)
+        gt_mesh = extract_mesh(gt_vol)
+        overlap_metrics = compute_overlap_metrics(pred_vol, gt_vol)
+        surface_metrics = compute_surface_similarity(pred_mesh, gt_mesh)
+
+    return {
+        "dice": overlap_metrics["dice"],
+        "metrics": {**overlap_metrics, **(surface_metrics or {}), "reprojection_l1": round(float(best_score.item()), 4)},
+        "pred": pred_mesh,
+        "gt": gt_mesh,
+    }
+
+
+@app.get("/api/metrics-vae")
+def get_vae_metrics():
+    """История обучения VAE."""
+    history_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "results", "metrics", "vae_history.json",
+    )
+    if os.path.exists(history_path):
+        try:
+            with open(history_path, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            return {"error": str(e)}
+    return {"error": "VAE history file not found."}
 
 # Точка входа для запуска через `python src/api.py`
 if __name__ == "__main__":

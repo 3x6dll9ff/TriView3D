@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
 
 /* ── Design Tokens ──────────────────────────────────────────────── */
 :root {
@@ -21,8 +22,6 @@
   --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
 }
-
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
 
 /* ── Reset ──────────────────────────────────────────────────────── */
 *, *::before, *::after {
@@ -190,12 +189,12 @@ body {
 
 /* ── Projections ─────────────────────────────────────────────────── */
 .projections {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 12px;
 }
 
 .projection-card {
-  flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -224,7 +223,21 @@ body {
   image-rendering: pixelated;
 }
 
-/* ── Metrics Bar ─────────────────────────────────────────────────── */
+/* ── Metrics Section ──────────────────────────────────────────────── */
+.metrics-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.metrics-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
 .metrics-bar {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
@@ -267,6 +280,10 @@ body {
   grid-template-columns: 1fr 1fr;
   gap: 12px;
   min-height: 400px;
+}
+
+.viewports-3 {
+  grid-template-columns: 1fr 1fr 1fr;
 }
 
 .viewport {

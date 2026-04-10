@@ -1,8 +1,8 @@
 """
-Визуализация примеров подготовленного датасета (tri-view).
+Визуализация примеров подготовленного датасета (multi-view).
 
 Генерирует:
-  1. Tri-view примеры (top/front/side) для нескольких типов клеток
+    1. Multi-view примеры для нескольких типов клеток
   2. 3D ground truth срезы (XY/XZ/YZ)
   3. Распределение морфометрических метрик по классам
   4. Распределение типов клеток (bar chart)
@@ -28,14 +28,14 @@ OUTPUT_DIR = "results/figures"
 
 
 def plot_tri_view_examples(df: pd.DataFrame, n_per_class: int = 3) -> None:
-    """Примеры tri-view входов: top/front/side для normal и anomaly."""
-    fig, axes = plt.subplots(n_per_class * 2, 3, figsize=(12, 4 * n_per_class))
+    """Примеры входов: top/bottom/side/front для normal и anomaly."""
+    fig, axes = plt.subplots(n_per_class * 2, 4, figsize=(16, 4 * n_per_class))
 
     normals = df[df["label"] == 0].sample(n=n_per_class, random_state=42)
     anomalies = df[df["label"] == 1].sample(n=n_per_class, random_state=42)
 
-    proj_names = ["top_proj", "bottom_proj", "side_proj"]
-    proj_labels = ["Top (сверху)", "Bottom (снизу)", "Side (сбоку)"]
+    proj_names = ["top_proj", "bottom_proj", "side_proj", "front_proj"]
+    proj_labels = ["Top (сверху)", "Bottom (снизу)", "Side (сбоку)", "Front (спереди)"]
 
     for i, (_, row) in enumerate(normals.iterrows()):
         for j, (pname, plabel) in enumerate(zip(proj_names, proj_labels)):
@@ -53,7 +53,7 @@ def plot_tri_view_examples(df: pd.DataFrame, n_per_class: int = 3) -> None:
     for ax in axes.ravel():
         ax.axis("off")
 
-    fig.suptitle("Tri-View Input Examples (Sum Projection)", fontsize=14, fontweight="bold")
+    fig.suptitle("Multi-View Input Examples (Sum Projection)", fontsize=14, fontweight="bold")
     plt.tight_layout()
     fig.savefig(os.path.join(OUTPUT_DIR, "tri_view_examples.png"), dpi=150)
     plt.close()

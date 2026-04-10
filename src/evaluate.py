@@ -1,199 +1,241 @@
 """
-Evaluation: метрики реконструкции и классификации.
+Evaluation: overall + hard subset + per-cell-type.
 
 Использование:
   python3 src/evaluate.py --data_dir data/processed --autoencoder results/best_autoencoder.pt
+  python3 src/evaluate.py --data_dir data/processed --autoencoder results/best_autoencoder.pt --refiner results/best_refiner.pt
 """
+
+from __future__ import annotations
 
 import argparse
 import json
-import os
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import torch
-from sklearn.metrics import (
-    accuracy_score,
-    classification_report,
-    confusion_matrix,
-    roc_auc_score,
-    roc_curve,
-)
 from torch.utils.data import DataLoader
 
-from autoencoder import TriViewAutoencoder
-from dataset import CellTriViewDataset
+try:
+    from src.autoencoder import TriViewAutoencoder
+    from src.dataset import CellTriViewDataset
+    from src.reconstruction_utils import infer_in_channels_from_state_dict, lift_views_to_volume, project_volume_batch
+    from src.refiner import DetailRefiner
+except ImportError:
+    from autoencoder import TriViewAutoencoder
+    from dataset import CellTriViewDataset
+    from reconstruction_utils import infer_in_channels_from_state_dict, lift_views_to_volume, project_volume_batch
+    from refiner import DetailRefiner
+
+
+def select_device() -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def unwrap_state_dict(checkpoint: dict[str, object]) -> dict[str, torch.Tensor]:
+    if "model_state_dict" in checkpoint:
+        return checkpoint["model_state_dict"]  # type: ignore[return-value]
+    return checkpoint  # type: ignore[return-value]
+
+
+def infer_latent_dim(state_dict: dict[str, torch.Tensor]) -> int:
+    return int(state_dict["encoder.fc.1.weight"].shape[0])
+
+
+def compute_metrics(pred: torch.Tensor, target: torch.Tensor) -> dict[str, float]:
+    pred_bin = (pred > 0.5).float()
+    intersection = float((pred_bin * target).sum().item())
+    union = float(pred_bin.sum().item() + target.sum().item())
+    dice = (2.0 * intersection + 1.0) / (union + 1.0)
+    iou = (intersection + 1.0) / (union - intersection + 1.0)
+    mse = float(((pred - target) ** 2).mean().item())
+    return {"dice": dice, "iou": iou, "mse": mse}
+
+
+def projection_l1(pred_volume: torch.Tensor, inputs: torch.Tensor, view_names: tuple[str, ...]) -> float:
+    projected = project_volume_batch(pred_volume, view_names)
+    return float(torch.abs(projected - inputs).mean().item())
+
+
+def build_prediction(
+    base_model: TriViewAutoencoder,
+    inputs: torch.Tensor,
+    refiner: DetailRefiner | None,
+    view_names: tuple[str, ...],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    coarse = base_model(inputs)
+    if refiner is None:
+        return coarse, coarse
+    lifted = lift_views_to_volume(inputs, view_names)
+    refined = refiner(coarse, lifted)
+    return coarse, refined
 
 
 @torch.no_grad()
-def compute_reconstruction_metrics(
-    model: torch.nn.Module,
-    loader: DataLoader,
+def evaluate_dataset(
+    dataset: CellTriViewDataset,
+    base_model: TriViewAutoencoder,
+    refiner: DetailRefiner | None,
     device: torch.device,
-) -> dict[str, float]:
-    """Считает Dice, IoU, MSE по всему датасету."""
-    model.eval()
-    all_dice, all_iou, all_mse = [], [], []
+) -> pd.DataFrame:
+    loader = DataLoader(dataset, batch_size=1, shuffle=False)
+    records: list[dict[str, object]] = []
 
     for batch in loader:
         inputs = batch["input"].to(device)
         target = batch["target_3d"].to(device)
+        coarse, final = build_prediction(base_model, inputs, refiner, dataset.view_names)
 
-        pred = model(inputs)
-        pred_bin = (pred > 0.5).float()
+        # reprojection error на входных 2D views для coarse и final
+        coarse_proj = projection_l1(coarse, inputs, dataset.view_names)
+        final_proj = projection_l1(final, inputs, dataset.view_names)
 
-        for i in range(len(pred)):
-            p = pred_bin[i].flatten()
-            t = target[i].flatten()
+        coarse_metrics = compute_metrics(coarse, target)
+        final_metrics = compute_metrics(final, target)
+        records.append(
+            {
+                "name": batch["name"][0],
+                "cell_type": batch["cell_type"][0],
+                "complexity_score": float(batch["complexity_score"][0]),
+                "coarse_dice": coarse_metrics["dice"],
+                "coarse_iou": coarse_metrics["iou"],
+                "coarse_mse": coarse_metrics["mse"],
+                "coarse_projection_l1": coarse_proj,
+                "final_dice": final_metrics["dice"],
+                "final_iou": final_metrics["iou"],
+                "final_mse": final_metrics["mse"],
+                "final_projection_l1": final_proj,
+            }
+        )
 
-            intersection = (p * t).sum().item()
-            union = p.sum().item() + t.sum().item()
+    return pd.DataFrame(records)
 
-            dice = (2 * intersection + 1) / (union + 1)
-            iou = (intersection + 1) / (union - intersection + 1)
-            mse = ((pred[i] - target[i]) ** 2).mean().item()
 
-            all_dice.append(dice)
-            all_iou.append(iou)
-            all_mse.append(mse)
+def summarize_results(df: pd.DataFrame, hard_quantile: float) -> dict[str, object]:
+    hard_threshold = float(df["complexity_score"].quantile(hard_quantile))
+    hard_df = df[df["complexity_score"] >= hard_threshold].copy()
 
-    return {
-        "dice_mean": float(np.mean(all_dice)),
-        "dice_std": float(np.std(all_dice)),
-        "iou_mean": float(np.mean(all_iou)),
-        "iou_std": float(np.std(all_iou)),
-        "mse_mean": float(np.mean(all_mse)),
+    overall = {
+        "coarse_dice": float(df["coarse_dice"].mean()),
+        "final_dice": float(df["final_dice"].mean()),
+        "coarse_iou": float(df["coarse_iou"].mean()),
+        "final_iou": float(df["final_iou"].mean()),
+        "coarse_projection_l1": float(df["coarse_projection_l1"].mean()),
+        "final_projection_l1": float(df["final_projection_l1"].mean()),
+    }
+    hard = {
+        "threshold": hard_threshold,
+        "count": int(len(hard_df)),
+        "coarse_dice": float(hard_df["coarse_dice"].mean()),
+        "final_dice": float(hard_df["final_dice"].mean()),
+        "coarse_iou": float(hard_df["coarse_iou"].mean()),
+        "final_iou": float(hard_df["final_iou"].mean()),
+        "coarse_projection_l1": float(hard_df["coarse_projection_l1"].mean()),
+        "final_projection_l1": float(hard_df["final_projection_l1"].mean()),
     }
 
-
-def plot_confusion_matrix(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    save_path: str,
-    title: str = "Confusion Matrix",
-) -> None:
-    cm = confusion_matrix(y_true, y_pred)
-    fig, ax = plt.subplots(figsize=(6, 5))
-    im = ax.imshow(cm, cmap="Blues")
-    ax.set_xticks([0, 1])
-    ax.set_yticks([0, 1])
-    ax.set_xticklabels(["Normal", "Anomaly"])
-    ax.set_yticklabels(["Normal", "Anomaly"])
-    ax.set_xlabel("Predicted")
-    ax.set_ylabel("True")
-    ax.set_title(title)
-
-    for i in range(2):
-        for j in range(2):
-            ax.text(j, i, str(cm[i, j]), ha="center", va="center", fontsize=16)
-
-    fig.colorbar(im)
-    plt.tight_layout()
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close()
+    per_cell_type = (
+        df.groupby("cell_type")[["coarse_dice", "final_dice", "coarse_iou", "final_iou"]]
+        .mean()
+        .sort_index()
+        .round(4)
+        .to_dict(orient="index")
+    )
+    return {"overall": overall, "hard_subset": hard, "per_cell_type": per_cell_type}
 
 
-def plot_roc_curve(
-    y_true: np.ndarray,
-    y_scores: np.ndarray,
-    save_path: str,
-    title: str = "ROC Curve",
-) -> None:
-    fpr, tpr, _ = roc_curve(y_true, y_scores)
-    auc = roc_auc_score(y_true, y_scores)
+def plot_training_history(history_path: Path, save_path: Path) -> None:
+    with history_path.open("r", encoding="utf-8") as file:
+        history = json.load(file)
 
-    fig, ax = plt.subplots(figsize=(6, 5))
-    ax.plot(fpr, tpr, color="crimson", lw=2, label=f"AUC = {auc:.3f}")
-    ax.plot([0, 1], [0, 1], "k--", lw=1)
-    ax.set_xlabel("FPR")
-    ax.set_ylabel("TPR")
-    ax.set_title(title)
-    ax.legend()
-    plt.tight_layout()
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close()
-
-
-def plot_training_history(
-    history_path: str,
-    save_path: str,
-) -> None:
-    with open(history_path) as f:
-        history = json.load(f)
+    train_loss = history.get("train_loss", [])
+    val_loss = history.get("val_loss") or history.get("test_loss", [])
+    val_dice = history.get("val_dice") or history.get("test_dice", [])
+    val_hard_dice = history.get("val_hard_dice", [])
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
-    axes[0].plot(history["train_loss"], label="Train")
-    axes[0].plot(history["test_loss"], label="Test")
+    axes[0].plot(train_loss, label="Train")
+    axes[0].plot(val_loss, label="Validation")
     axes[0].set_title("Loss")
     axes[0].legend()
 
-    axes[1].plot(history["test_dice"])
-    axes[1].set_title("Test Dice")
+    axes[1].plot(val_dice, label="Val Dice")
+    axes[1].set_title("Validation Dice")
+    axes[1].legend()
 
-    axes[2].plot(history["test_iou"])
-    axes[2].set_title("Test IoU")
+    axes[2].plot(val_hard_dice, label="Hard Dice")
+    axes[2].set_title("Hard Subset Dice")
+    axes[2].legend()
 
     for ax in axes:
         ax.set_xlabel("Epoch")
         ax.grid(True, alpha=0.3)
 
+    save_path.parent.mkdir(parents=True, exist_ok=True)
     plt.tight_layout()
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close()
+    plt.close(fig)
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluation")
     parser.add_argument("--data_dir", type=str, default="data/processed")
     parser.add_argument("--autoencoder", type=str, default="results/best_autoencoder.pt")
+    parser.add_argument("--refiner", type=str, default="")
     parser.add_argument("--output_dir", type=str, default="results")
-    parser.add_argument("--latent_dim", type=int, default=256)
+    parser.add_argument("--input_mode", type=str, default="quad", choices=["tri", "quad"])
+    parser.add_argument("--hard_quantile", type=float, default=0.8)
     args = parser.parse_args()
 
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
+    device = select_device()
+    test_ds = CellTriViewDataset(args.data_dir, split="test", input_mode=args.input_mode)
 
-    # Датасет
-    test_ds = CellTriViewDataset(args.data_dir, split="test")
-    test_loader = DataLoader(test_ds, batch_size=8, shuffle=False)
-
-    # Загружаем autoencoder
-    if os.path.exists(args.autoencoder):
-        model = TriViewAutoencoder(latent_dim=args.latent_dim).to(device)
-        model.load_state_dict(
-            torch.load(args.autoencoder, map_location=device)
+    base_checkpoint = torch.load(args.autoencoder, map_location=device)
+    base_state_dict = unwrap_state_dict(base_checkpoint)
+    in_channels = infer_in_channels_from_state_dict(base_state_dict)
+    latent_dim = infer_latent_dim(base_state_dict)
+    if in_channels != len(test_ds.view_names):
+        raise ValueError(
+            f"Checkpoint expects {in_channels} channels, dataset input_mode={args.input_mode} gives {len(test_ds.view_names)}"
         )
 
-        # Метрики реконструкции
-        print("=== Reconstruction Metrics ===")
-        recon_metrics = compute_reconstruction_metrics(model, test_loader, device)
-        for k, v in recon_metrics.items():
-            print(f"  {k}: {v:.4f}")
+    base_model = TriViewAutoencoder(latent_dim=latent_dim, in_channels=in_channels).to(device)
+    base_model.load_state_dict(base_state_dict)
+    base_model.eval()
 
-        # Сохранение
-        metrics_dir = os.path.join(args.output_dir, "metrics")
-        os.makedirs(metrics_dir, exist_ok=True)
-        with open(os.path.join(metrics_dir, "reconstruction_metrics.json"), "w") as f:
-            json.dump(recon_metrics, f, indent=2)
+    refiner = None
+    if args.refiner:
+        refiner = DetailRefiner(view_channels=len(test_ds.view_names)).to(device)
+        refiner.load_state_dict(torch.load(args.refiner, map_location=device))
+        refiner.eval()
 
-        # Графики обучения
-        history_path = os.path.join(metrics_dir, "reconstruction_history.json")
-        if os.path.exists(history_path):
-            plot_training_history(
-                history_path,
-                os.path.join(args.output_dir, "figures", "training_history.png"),
-            )
-            print("  Training history plot saved")
-    else:
-        print(f"Autoencoder не найден: {args.autoencoder}")
+    result_df = evaluate_dataset(test_ds, base_model, refiner, device)
+    summary = summarize_results(result_df, hard_quantile=args.hard_quantile)
+
+    output_dir = Path(args.output_dir)
+    metrics_dir = output_dir / "metrics"
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    evaluation_path = metrics_dir / "reconstruction_metrics.json"
+    result_df.to_csv(metrics_dir / "reconstruction_metrics_per_sample.csv", index=False)
+    with evaluation_path.open("w", encoding="utf-8") as file:
+        json.dump(summary, file, indent=2)
+
+    print("=== Reconstruction Metrics ===")
+    for section, values in summary.items():
+        print(f"[{section}]")
+        print(json.dumps(values, indent=2, ensure_ascii=False))
+
+    history_path = metrics_dir / "reconstruction_history.json"
+    if history_path.exists():
+        plot_training_history(history_path, output_dir / "figures" / "training_history.png")
+        print("Training history plot saved")
 
 
 if __name__ == "__main__":

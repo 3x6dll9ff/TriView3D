@@ -1,0 +1,15 @@
+# Minimal requirements for running the pipeline in Colab
+numpy
+scipy
+scikit-image
+matplotlib
+pandas
+tqdm
+torch
+torchvision
+trimesh
+imageio
+pyyaml
+# Optional / useful
+seaborn
+meshio
