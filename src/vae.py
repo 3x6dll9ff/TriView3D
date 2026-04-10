@@ -45,7 +45,10 @@ class TriViewCVAE(nn.Module):
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
         )
-        self.flatten = nn.Flatten()
+        self.flatten = nn.Sequential(
+            nn.Flatten(),
+            nn.Dropout(0.3)
+        )
 
         # VAE heads: mu и logvar вместо единого latent
         self.fc_mu = nn.Linear(256 * 4 * 4, latent_dim)
