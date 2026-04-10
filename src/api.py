@@ -244,8 +244,8 @@ def predict(filename: str):
         pred_tensor = coarse_tensor
         if refiner_model is not None:
             lifted_views = lift_views_to_volume(tri_tensor, model_view_names)
-            # Refiner также возвращает логиты
-            refined_logits = refiner_model(coarse_tensor, lifted_views)
+            # Передаем сырые логиты (coarse_logits), рефайнер сам сделает sigmoid где нужно
+            refined_logits = refiner_model(coarse_logits, lifted_views)
             pred_tensor = torch.sigmoid(refined_logits)
             
         pred_vol = pred_tensor[0, 0].cpu().numpy()

@@ -43,14 +43,19 @@ class DetailRefiner(nn.Module):
             nn.Conv3d(hidden_channels // 2, 1, kernel_size=1),
         )
 
-    def forward(self, coarse: torch.Tensor, lifted_views: torch.Tensor) -> torch.Tensor:
-        uncertainty = 1.0 - torch.abs(2.0 * coarse - 1.0)
-        x = torch.cat([coarse, lifted_views, uncertainty], dim=1)
+    def forward(self, coarse_logits: torch.Tensor, lifted_views: torch.Tensor) -> torch.Tensor:
+        # Теперь coarse — это логиты. Для расчета неопределенности нам нужны вероятности (0...1)
+        coarse_prob = torch.sigmoid(coarse_logits)
+        
+        # Неопределенность: выше там, где вероятность близка к 0.5 (в логитах это около 0)
+        uncertainty = 1.0 - torch.abs(2.0 * coarse_prob - 1.0)
+        
+        x = torch.cat([coarse_prob, lifted_views, uncertainty], dim=1)
         features = self.stem(x)
         features = self.blocks(features)
         residual_logits = self.head(features)
 
-        coarse_logits = torch.logit(coarse.clamp(1e-4, 1.0 - 1e-4))
+        # Раньше тут был torch.logit(coarse), но теперь это и есть coarse_logits
         gating = 0.25 + uncertainty
         refined_logits = coarse_logits + gating * residual_logits
         return refined_logits
