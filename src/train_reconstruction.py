@@ -233,7 +233,7 @@ def train(
     batch_size: int = 8,
     lr: float = 1e-3,
     latent_dim: int = 256,
-    input_mode: str = "quad",
+    input_mode: str = "tri",
     bce_weight: float = 0.35,
     dice_weight: float = 0.25,
     projection_weight: float = 0.25,
@@ -423,7 +423,7 @@ def main() -> None:
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--latent_dim", type=int, default=256)
-    parser.add_argument("--input_mode", type=str, default="quad", choices=["tri", "quad"])
+    parser.add_argument("--input_mode", type=str, default="tri", choices=["tri", "quad"])
     parser.add_argument("--bce_weight", type=float, default=0.35)
     parser.add_argument("--dice_weight", type=float, default=0.25)
     parser.add_argument("--projection_weight", type=float, default=0.25)

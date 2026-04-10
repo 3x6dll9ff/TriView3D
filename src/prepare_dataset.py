@@ -91,7 +91,7 @@ def prepare_dataset(
     shapr_dir: str,
     output_dir: str,
     rbc_only: bool = True,
-    input_mode: str = "quad",
+    input_mode: str = "tri",
 ) -> None:
     """Полный пайплайн подготовки данных."""
     shapr_path = Path(shapr_dir)
@@ -212,7 +212,7 @@ def main() -> None:
     parser.add_argument(
         "--input_mode",
         type=str,
-        default="quad",
+        default="tri",
         choices=["tri", "quad"],
         help="Рекомендуемый режим входа для дальнейшего обучения",
     )

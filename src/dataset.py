@@ -63,7 +63,10 @@ class CellTriViewDataset(Dataset):
         for view_name in (*self.view_names, "obj"):
             view_dir = self.data_dir / view_name
             if not view_dir.exists():
-                raise FileNotFoundError(f"Required directory not found: {view_dir}")
+                hint = ""
+                if view_name == "front_proj":
+                    hint = " (возможно, вам нужно использовать --input_mode tri для старых данных)"
+                raise FileNotFoundError(f"Required directory not found: {view_dir}{hint}")
 
     def _split_dataframe(
         self,

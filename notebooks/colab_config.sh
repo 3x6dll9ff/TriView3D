@@ -7,7 +7,9 @@ OUTPUT_DIR="/content/output"
 REPO_DIR="/content/repo"
 
 # Data preparation
-INPUT_MODE="quad"    # tri or quad
+# Режим входа: tri (3 проекции) или quad (4 проекции). 
+# Если вы используете старый архив data_processed.zip, оставьте 'tri'.
+INPUT_MODE="tri"    
 
 # Training hyperparams (safe defaults for Colab T4)
 BASE_EPOCHS=2
