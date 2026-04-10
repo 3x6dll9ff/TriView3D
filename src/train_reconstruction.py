@@ -15,7 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 from torch.utils.data import DataLoader
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 
 from src.autoencoder import TriViewAutoencoder, SingleViewAutoencoder, reconstruction_loss
 from src.dataset import CellTriViewDataset
@@ -39,9 +39,10 @@ def train_one_epoch(
 
         # Использование AMP для ускорения GPU
         if scaler is not None and device.type == "cuda":
-            with autocast():
+            with autocast('cuda'):
                 pred = model(inputs)
-                loss = reconstruction_loss(pred, target_3d)
+            # Вычисление лосса должно происходить в fp32, чтобы избежать ошибки BCE
+            loss = reconstruction_loss(pred.float(), target_3d.float())
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -141,7 +142,7 @@ def train(
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Параметры модели: {n_params:,}")
 
-    scaler = GradScaler() if device.type == "cuda" else None
+    scaler = GradScaler('cuda') if device.type == "cuda" else None
 
     # Обучение
     os.makedirs(os.path.join(output_dir, "metrics"), exist_ok=True)
