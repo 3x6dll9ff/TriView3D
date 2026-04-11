@@ -20,8 +20,10 @@ def get_view_names(input_mode: str) -> tuple[str, ...]:
 
 
 def infer_in_channels_from_state_dict(state_dict: dict[str, torch.Tensor]) -> int:
-    weight = state_dict["encoder.conv.0.weight"]
-    return int(weight.shape[1])
+    for key in state_dict.keys():
+        if "conv.0.weight" in key:
+            return int(state_dict[key].shape[1])
+    raise KeyError("Не удалось найти входной сверточный слой (conv.0.weight) в state_dict")
 
 
 def _safe_zscore(values: np.ndarray) -> np.ndarray:

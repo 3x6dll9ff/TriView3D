@@ -16,12 +16,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-try:
-    from src.autoencoder import Decoder3D, reconstruction_loss
-    from src.reconstruction_utils import project_volume_batch
-except ImportError:
-    from autoencoder import Decoder3D, reconstruction_loss
-    from reconstruction_utils import project_volume_batch
+from src.autoencoder import Decoder3D, reconstruction_loss
+from src.reconstruction_utils import project_volume_batch
 
 
 class TriViewCVAE(nn.Module):
