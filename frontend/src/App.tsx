@@ -5,9 +5,11 @@ import { useThree, useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import axios from 'axios'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
+import Sidebar from './components/Sidebar'
+import MetricStrip from './components/MetricStrip'
+import PipelineTracker from './components/PipelineTracker'
 import './index.css'
 
-// ── Synced camera state across two Canvas instances ──────────────
 const sharedCamera = {
   position: new THREE.Vector3(0, 40, 50),
   target: new THREE.Vector3(0, 0, 0),
@@ -47,7 +49,6 @@ function SyncedControls() {
   )
 }
 
-// ── Circle texture for round points ─────────────────────────────
 const circleTexture = (() => {
   const canvas = document.createElement('canvas')
   canvas.width = 64
@@ -61,7 +62,6 @@ const circleTexture = (() => {
   return tex
 })()
 
-// ── 3D Mesh Component ────────────────────────────────────────────
 function CellMesh({ vertices, indices, color }: {
   vertices: number[]
   indices: number[]
@@ -95,7 +95,6 @@ function CellMesh({ vertices, indices, color }: {
 
   return (
     <group>
-      {/* Glow shell — полупрозрачная плёнка для читаемости формы */}
       <mesh geometry={geometry}>
         <meshBasicMaterial
           color={color}
@@ -105,7 +104,6 @@ function CellMesh({ vertices, indices, color }: {
           depthWrite={false}
         />
       </mesh>
-      {/* Wireframe */}
       <mesh geometry={geometry}>
         <meshBasicMaterial
           color={color}
@@ -116,7 +114,6 @@ function CellMesh({ vertices, indices, color }: {
           depthWrite={false}
         />
       </mesh>
-      {/* Points */}
       <points geometry={geometry}>
         <pointsMaterial
           size={0.25}
@@ -134,7 +131,6 @@ function CellMesh({ vertices, indices, color }: {
   )
 }
 
-// ── Scene wrapper ────────────────────────────────────────────────
 function Scene({ meshData, color, label }: {
   meshData: { vertices: number[]; indices: number[] } | null
   color: string
@@ -158,14 +154,12 @@ function Scene({ meshData, color, label }: {
   )
 }
 
-// ── Types ────────────────────────────────────────────────────────
 interface CellInfo { filename: string; score: string; type: string }
 interface MetricDef { key: string; label: string; value: number | string; unit?: string }
 type PreviewMap = Record<string, string>
 
 const API = import.meta.env.VITE_API_BASE_URL || ''
 
-// ── Main App ─────────────────────────────────────────────────────
 function App() {
   const [cells, setCells] = useState<CellInfo[]>([])
   const [selectedCell, setSelectedCell] = useState('')
@@ -201,7 +195,6 @@ function App() {
       }
     }).catch(console.error)
 
-    // Проверяем доступность VAE модели через статус бэкенда
     axios.get(`${API}/api/status`).then(res => {
       setVaeAvailable(res.data.vae_loaded)
     }).catch(() => setVaeAvailable(false))
@@ -220,9 +213,7 @@ function App() {
     setCnnData(null)
     setVaeData(null)
     try {
-      // CNN запрос всегда
       const cnnPromise = axios.post(`${API}/api/predict/${selectedCell}`)
-      // VAE запрос если модель доступна
       const vaePromise = vaeAvailable
         ? axios.post(`${API}/api/predict-vae/${selectedCell}`).catch(() => null)
         : Promise.resolve(null)
@@ -245,220 +236,178 @@ function App() {
     { key: 'reproj', label: 'Reproj L1', value: data.metrics?.reprojection_l1 },
     { key: 'assd', label: 'ASSD', value: data.metrics?.surface_assd, unit: 'vox' },
     { key: 'hd95', label: 'HD95', value: data.metrics?.surface_hd95, unit: 'vox' },
-    { key: 'sim', label: 'Surface Sim', value: data.metrics?.surface_similarity },
+    { key: 'sim', label: 'Surf Sim', value: data.metrics?.surface_similarity },
     { key: 'vol', label: 'Vol Diff', value: data.metrics?.volume_diff_pct, unit: '%' },
   ] : []
 
-  const formatMetric = (v: number | string, unit?: string) => {
-    if (v === undefined || v === null || v === '-') return '—'
-    const num = typeof v === 'number' ? v : parseFloat(v)
-    if (isNaN(num)) return '—'
-    return `${num.toFixed(3)}${unit ? ` ${unit}` : ''}`
-  }
-
-  const getMetricColor = (key: string, val: number | string) => {
-    const n = typeof val === 'number' ? val : parseFloat(val as string)
-    if (isNaN(n)) return ''
-    if (['dice', 'iou', 'precision', 'recall', 'sim'].includes(key)) {
-      if (n >= 0.85) return 'metric-good'
-      if (n >= 0.7) return 'metric-ok'
-      return 'metric-bad'
-    }
-    if (key === 'reproj') {
-      if (n <= 0.03) return 'metric-good'
-      if (n <= 0.06) return 'metric-ok'
-      return 'metric-bad'
-    }
-    return ''
-  }
+  const activeStage = useMemo(() => {
+    if (loading && !cnnData) return 1
+    if (cnnData && loading) return 2
+    if (cnnData) return 3
+    return 0
+  }, [loading, cnnData])
 
   const hasResults = cnnData || vaeData
 
   return (
     <div className="app">
-      {/* ── Header ──────────────────────────────────────────── */}
-      <header className="header">
-        <div className="header-left">
-          <h1 className="logo">TriView<span>3D</span></h1>
-          <span className="logo-sub">Cell Shape Reconstruction</span>
-        </div>
-        <nav className="tabs">
-          <button
-            className={`tab ${tab === 'predict' ? 'tab-active' : ''}`}
-            onClick={() => setTab('predict')}
-          >
-            Predictor
-          </button>
-          <button
-            className={`tab ${tab === 'metrics' ? 'tab-active' : ''}`}
-            onClick={() => setTab('metrics')}
-          >
-            Training Metrics
-          </button>
-        </nav>
-      </header>
+      <Sidebar tab={tab} onTabChange={setTab} vaeAvailable={vaeAvailable} />
 
-      {/* ── Predictor Tab ───────────────────────────────────── */}
-      {tab === 'predict' && (
-        <main className="content">
-          {/* Controls */}
-          <section className="controls-row">
-            <div className="select-wrapper">
-              <label className="field-label">Cell Sample</label>
-              <select
-                className="select"
-                value={selectedCell}
-                onChange={e => setSelectedCell(e.target.value)}
-              >
-                {cells.map(c => (
-                  <option key={c.filename} value={c.filename}>
-                    {c.type} · score {c.score}
-                  </option>
-                ))}
-              </select>
+      <div className="main-area">
+        <header className="header">
+          <div className="header-left">
+            <div className="header-status">
+              <div className={`status-dot ${cnnData || vaeData ? 'online' : ''}`} />
+              <span className="header-info">
+                {cells.length} samples · {vaeAvailable ? 'VAE + CNN' : 'CNN only'}
+              </span>
             </div>
-            <button
-              className="btn-predict"
-              onClick={handlePredict}
-              disabled={loading}
-            >
-              {loading ? 'Processing...' : 'Predict 3D Shape'}
-            </button>
-          </section>
+          </div>
+        </header>
 
-          {/* Projections */}
-          {preview && (
-            <section className="projections">
-              {(['top', 'bottom', 'side', 'front'] as const).filter(view => preview[view]).map(view => (
-                <div key={view} className="projection-card">
-                  <span className="projection-label">{view}</span>
-                  <img
-                    src={preview[view]}
-                    alt={`${view} projection`}
-                    className="projection-img"
+        {tab === 'predict' && (
+          <main className="content" style={{ paddingTop: 0 }}>
+            <section className="top-block">
+              <div className="top-block-left">
+                <div className="select-wrapper">
+                  <label className="field-label">Cell Sample</label>
+                  <select
+                    className="select"
+                    value={selectedCell}
+                    onChange={e => setSelectedCell(e.target.value)}
+                  >
+                    {cells.map(c => (
+                      <option key={c.filename} value={c.filename}>
+                        {c.type} · score {c.score}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  className="btn-predict"
+                  onClick={handlePredict}
+                  disabled={loading}
+                >
+                  {loading ? 'Processing...' : 'Generate'}
+                </button>
+              </div>
+
+              <div className="top-block-mid">
+                {preview ? (
+                  ['top', 'bottom', 'side', 'front'].filter(view => preview[view as keyof typeof preview]).map(view => (
+                    <div key={view} className="projection-card">
+                      <span className="projection-label">{view}</span>
+                      <img
+                        src={preview[view as keyof typeof preview]}
+                        alt={`${view} projection`}
+                        className="projection-img"
+                      />
+                    </div>
+                  ))
+                ) : (
+                  <div className="top-block-empty">Select a sample</div>
+                )}
+              </div>
+
+              <div className="top-block-pipeline">
+                <PipelineTracker activeStage={activeStage} />
+              </div>
+            </section>
+
+            {(loading || hasResults) && (
+              <section className={`viewports ${vaeData ? 'viewports-3' : ''}`}>
+                <div className="viewport">
+                  {cnnData && <MetricStrip metrics={buildMetrics(cnnData)} />}
+                  {loading && !cnnData && (
+                    <div className="viewport-loading">
+                      <div className="spinner" />
+                    </div>
+                  )}
+                  <Scene
+                    meshData={cnnData?.pred}
+                    color="#4fffff"
+                    label="CNN Prediction"
                   />
                 </div>
-              ))}
-            </section>
-          )}
-
-          {/* Metrics: CNN row */}
-          {cnnData && (
-            <section className="metrics-section">
-              <div className="metrics-header">CNN Autoencoder</div>
-              <div className="metrics-bar">
-                {buildMetrics(cnnData).map(m => (
-                  <div key={m.key} className={`metric-item ${getMetricColor(m.key, m.value)}`}>
-                    <span className="metric-label">{m.label}</span>
-                    <span className="metric-value">{formatMetric(m.value, m.unit)}</span>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {/* Metrics: VAE row */}
-          {vaeData && (
-            <section className="metrics-section">
-              <div className="metrics-header">Generative VAE</div>
-              <div className="metrics-bar">
-                {buildMetrics(vaeData).map(m => (
-                  <div key={m.key} className={`metric-item ${getMetricColor(m.key, m.value)}`}>
-                    <span className="metric-label">{m.label}</span>
-                    <span className="metric-value">{formatMetric(m.value, m.unit)}</span>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {/* 3D Viewports: CNN | VAE | Ground Truth */}
-          {(loading || hasResults) && (
-            <section className={`viewports ${vaeData ? 'viewports-3' : ''}`}>
-              <div className="viewport">
-                {loading && (
-                  <div className="viewport-loading">
-                    <div className="spinner" />
+                {vaeData && (
+                  <div className="viewport">
+                    <MetricStrip metrics={buildMetrics(vaeData)} />
+                    <Scene
+                      meshData={vaeData?.pred}
+                      color="#a0c4ff"
+                      label="VAE Generation"
+                    />
                   </div>
                 )}
-                <Scene
-                  meshData={cnnData?.pred}
-                  color="#d8b4fe"
-                  label="CNN Prediction"
-                />
-              </div>
-              {vaeData && (
                 <div className="viewport">
+                  {cnnData && <MetricStrip metrics={[
+                    { key: 'gt_info', label: 'Ground Truth', value: 'reference' },
+                    { key: 'gt_dice', label: 'Ref Dice', value: cnnData?.dice ?? '—' },
+                    { key: 'gt_reproj', label: 'Reproj L1', value: cnnData?.metrics?.reprojection_l1 ?? '—' },
+                    { key: 'gt_vol', label: 'Vol Diff', value: cnnData?.metrics?.volume_diff_pct ?? '—', unit: '%' },
+                  ]} />}
                   <Scene
-                    meshData={vaeData?.pred}
-                    color="#c4b5fd"
-                    label="VAE Generation"
+                    meshData={cnnData?.gt}
+                    color="#a5d8ff"
+                    label="Ground Truth"
                   />
                 </div>
-              )}
-              <div className="viewport">
-                <Scene
-                  meshData={cnnData?.gt}
-                  color="#a5d8ff"
-                  label="Ground Truth"
-                />
+              </section>
+            )}
+
+            {!hasResults && !loading && (
+              <div className="empty-state">
+                Select a cell sample and click <strong>Predict 3D Shape</strong> to begin
+              </div>
+            )}
+          </main>
+        )}
+
+        {tab === 'metrics' && (
+          <main className="content">
+            <section className="chart-section">
+              <h2 className="chart-title">Loss Convergence</h2>
+              <p className="chart-subtitle">BCE + Dice hybrid loss, 50 epochs, Adam lr=1e-3</p>
+              <div className="chart-container">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={metricsHistory} margin={{ left: 0, bottom: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
+                    <XAxis dataKey="epoch" stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" />
+                    <YAxis stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" />
+                    <Tooltip
+                      contentStyle={{ background: '#18181f', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '4px', fontSize: '11px', fontFamily: 'JetBrains Mono' }}
+                    />
+                    <Legend iconType="circle" />
+                    <Line type="monotone" name="Train Loss" dataKey="train_loss" stroke="#4fffff" strokeWidth={1.5} dot={false} />
+                    <Line type="monotone" name="Test Loss" dataKey="test_loss" stroke="#ef4444" strokeWidth={1.5} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
               </div>
             </section>
-          )}
 
-          {!hasResults && !loading && (
-            <div className="empty-state">
-              Select a cell sample and click <strong>Predict 3D Shape</strong> to begin
-            </div>
-          )}
-        </main>
-      )}
-
-      {/* ── Metrics Tab ─────────────────────────────────────── */}
-      {tab === 'metrics' && (
-        <main className="content">
-          <section className="chart-section">
-            <h2 className="chart-title">Loss Convergence</h2>
-            <p className="chart-subtitle">BCE + Dice hybrid loss, 50 epochs, Adam lr=1e-3</p>
-            <div className="chart-container">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={metricsHistory} margin={{ left: 0, bottom: 10 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
-                  <XAxis dataKey="epoch" stroke="rgba(255,255,255,0.3)" fontSize={11} />
-                  <YAxis stroke="rgba(255,255,255,0.3)" fontSize={11} />
-                  <Tooltip
-                    contentStyle={{ background: '#111118', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', fontSize: '12px' }}
-                  />
-                  <Legend iconType="circle" />
-                  <Line type="monotone" name="Train Loss" dataKey="train_loss" stroke="#3b82f6" strokeWidth={2} dot={false} />
-                  <Line type="monotone" name="Test Loss" dataKey="test_loss" stroke="#ef4444" strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </section>
-
-          <section className="chart-section">
-            <h2 className="chart-title">Reconstruction Quality</h2>
-            <p className="chart-subtitle">Dice score and IoU on test set</p>
-            <div className="chart-container">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={metricsHistory} margin={{ left: 0, bottom: 10 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" vertical={false} />
-                  <XAxis dataKey="epoch" stroke="rgba(255,255,255,0.3)" fontSize={11} />
-                  <YAxis stroke="rgba(255,255,255,0.3)" fontSize={11} domain={[0.5, 1.0]} />
-                  <Tooltip
-                    contentStyle={{ background: '#111118', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', fontSize: '12px' }}
-                  />
-                  <Legend iconType="circle" />
-                  <Line type="monotone" name="Dice Score" dataKey="test_dice" stroke="#a855f7" strokeWidth={2} dot={false} />
-                  <Line type="monotone" name="Hard Dice" dataKey="test_hard_dice" stroke="#f59e0b" strokeWidth={2} dot={false} />
-                  <Line type="monotone" name="IoU" dataKey="test_iou" stroke="#10b981" strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </section>
-        </main>
-      )}
+            <section className="chart-section">
+              <h2 className="chart-title">Reconstruction Quality</h2>
+              <p className="chart-subtitle">Dice score and IoU on test set</p>
+              <div className="chart-container">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={metricsHistory} margin={{ left: 0, bottom: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
+                    <XAxis dataKey="epoch" stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" />
+                    <YAxis stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" domain={[0.5, 1.0]} />
+                    <Tooltip
+                      contentStyle={{ background: '#18181f', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '4px', fontSize: '11px', fontFamily: 'JetBrains Mono' }}
+                    />
+                    <Legend iconType="circle" />
+                    <Line type="monotone" name="Dice Score" dataKey="test_dice" stroke="#4fffff" strokeWidth={1.5} dot={false} />
+                    <Line type="monotone" name="Hard Dice" dataKey="test_hard_dice" stroke="#f59e0b" strokeWidth={1.5} dot={false} />
+                    <Line type="monotone" name="IoU" dataKey="test_iou" stroke="#22c55e" strokeWidth={1.5} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </section>
+          </main>
+        )}
+      </div>
     </div>
   )
 }
