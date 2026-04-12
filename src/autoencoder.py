@@ -226,7 +226,9 @@ def projection_consistency_loss(
 ) -> torch.Tensor:
     projected = project_volume_batch(torch.sigmoid(pred), view_names)
     projected = torch.clamp(projected, min=1e-6, max=1.0 - 1e-6)
-    return F.binary_cross_entropy(projected, inputs, reduction="mean")
+    return F.binary_cross_entropy_with_logits(
+        torch.logit(projected), inputs, reduction="mean"
+    )
 
 
 def reconstruction_loss(

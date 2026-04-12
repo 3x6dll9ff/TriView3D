@@ -20,7 +20,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import torch
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from src.autoencoder import TriViewAutoencoder, reconstruction_loss
@@ -109,7 +109,7 @@ def train_one_epoch(
         optimizer.zero_grad(set_to_none=True)
 
         if scaler is not None and device.type == "cuda":
-            with autocast():
+            with autocast("cuda"):
                 pred = model(inputs)
                 loss, components = reconstruction_loss(
                     pred,
@@ -271,7 +271,7 @@ def train(
         factor=0.5,
         patience=4,
     )
-    scaler = GradScaler() if device.type == "cuda" else None
+    scaler = GradScaler("cuda") if device.type == "cuda" else None
 
     n_params = sum(parameter.numel() for parameter in model.parameters())
     print(f"Параметры модели: {n_params:,}")

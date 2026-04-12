@@ -23,7 +23,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, WeightedRandomSampler
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 
 from src.vae import TriViewCVAE, best_of_k_generate, vae_loss
 from src.dataset import CellTriViewDataset
@@ -61,7 +61,7 @@ def train_one_epoch(
 
         # Вычисление с AMP
         if scaler is not None and device.type == "cuda":
-            with autocast():
+            with autocast("cuda"):
                 pred, mu, logvar = model(inputs)
             # Loss считаем в fp32
             loss, components = vae_loss(
@@ -257,7 +257,7 @@ def train(
     print(f"Параметры модели: {n_params:,}")
     print(f"KL weight: {kl_weight}")
 
-    scaler = GradScaler() if device.type == "cuda" else None
+    scaler = GradScaler("cuda") if device.type == "cuda" else None
 
     # Обучение
     os.makedirs(os.path.join(output_dir, "metrics"), exist_ok=True)
