@@ -89,7 +89,7 @@ def compute_3d_morphometrics(volume_3d: np.ndarray) -> dict[str, float]:
     if volume < 10:
         return {"volume": volume, "sphericity": 0.0, "convexity": 0.0, "surface_area": 0.0, "compactness": 0.0}
 
-    surface = binary_dilation(vol_bin, iterations=1) - binary_erosion(vol_bin, iterations=1)
+    surface = binary_dilation(vol_bin, iterations=1).astype(np.float32) - binary_erosion(vol_bin, iterations=1).astype(np.float32)
     surface_area = float(surface.sum())
 
     try:
