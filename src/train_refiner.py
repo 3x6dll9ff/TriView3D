@@ -9,25 +9,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
+import sys
 import time
 from pathlib import Path
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import torch
 from torch.cuda.amp import GradScaler, autocast
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
-try:
-    from src.autoencoder import TriViewAutoencoder, reconstruction_loss
-    from src.dataset import CellTriViewDataset
-    from src.reconstruction_utils import infer_in_channels_from_state_dict, lift_views_to_volume
-    from src.refiner import DetailRefiner
-except ImportError:
-    from autoencoder import TriViewAutoencoder, reconstruction_loss
-    from dataset import CellTriViewDataset
-    from reconstruction_utils import infer_in_channels_from_state_dict, lift_views_to_volume
-    from refiner import DetailRefiner
+from src.autoencoder import TriViewAutoencoder, reconstruction_loss
+from src.dataset import CellTriViewDataset
+from src.reconstruction_utils import infer_in_channels_from_state_dict, lift_views_to_volume
+from src.refiner import DetailRefiner
 
 
 def set_seed(seed: int = 42) -> None:

@@ -13,6 +13,9 @@
 import argparse
 import json
 import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd
@@ -20,16 +23,10 @@ import torch
 from torch.utils.data import DataLoader
 from sklearn.model_selection import StratifiedShuffleSplit
 
-try:
-    from src.autoencoder import TriViewAutoencoder
-    from src.classifier import LatentClassifier, MorphometryRFClassifier
-    from src.dataset import CellTriViewDataset
-    from src.reconstruction_utils import infer_in_channels_from_state_dict
-except ImportError:
-    from autoencoder import TriViewAutoencoder
-    from classifier import LatentClassifier, MorphometryRFClassifier
-    from dataset import CellTriViewDataset
-    from reconstruction_utils import infer_in_channels_from_state_dict
+from src.autoencoder import TriViewAutoencoder
+from src.classifier import LatentClassifier, MorphometryRFClassifier
+from src.dataset import CellTriViewDataset
+from src.reconstruction_utils import infer_in_channels_from_state_dict
 
 
 def train_random_forest(data_dir: str, output_dir: str) -> None:

@@ -6,7 +6,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 from pathlib import Path
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -14,26 +18,15 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
-try:
-    from src.autoencoder import TriViewAutoencoder
-    from src.dataset import CellTriViewDataset
-    from src.reconstruction_utils import (
-        infer_in_channels_from_state_dict,
-        infer_skip_channels_from_state_dict,
-        lift_views_to_volume,
-        project_volume_batch,
-    )
-    from src.refiner import DetailRefiner
-except ImportError:
-    from autoencoder import TriViewAutoencoder
-    from dataset import CellTriViewDataset
-    from reconstruction_utils import (
-        infer_in_channels_from_state_dict,
-        infer_skip_channels_from_state_dict,
-        lift_views_to_volume,
-        project_volume_batch,
-    )
-    from refiner import DetailRefiner
+from src.autoencoder import TriViewAutoencoder
+from src.dataset import CellTriViewDataset
+from src.reconstruction_utils import (
+    infer_in_channels_from_state_dict,
+    infer_skip_channels_from_state_dict,
+    lift_views_to_volume,
+    project_volume_batch,
+)
+from src.refiner import DetailRefiner
 
 
 def select_device() -> torch.device:
