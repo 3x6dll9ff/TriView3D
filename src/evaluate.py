@@ -1,9 +1,5 @@
 """
-Evaluation: overall + hard subset + per-cell-type.
-
-Использование:
-  python3 src/evaluate.py --data_dir data/processed --autoencoder results/best_autoencoder.pt
-  python3 src/evaluate.py --data_dir data/processed --autoencoder results/best_autoencoder.pt --refiner results/best_refiner.pt
+Evaluation: overall + hard subset + per-cell-type + TTA.
 """
 
 from __future__ import annotations
@@ -21,12 +17,22 @@ from torch.utils.data import DataLoader
 try:
     from src.autoencoder import TriViewAutoencoder
     from src.dataset import CellTriViewDataset
-    from src.reconstruction_utils import infer_in_channels_from_state_dict, lift_views_to_volume, project_volume_batch
+    from src.reconstruction_utils import (
+        infer_in_channels_from_state_dict,
+        infer_skip_channels_from_state_dict,
+        lift_views_to_volume,
+        project_volume_batch,
+    )
     from src.refiner import DetailRefiner
 except ImportError:
     from autoencoder import TriViewAutoencoder
     from dataset import CellTriViewDataset
-    from reconstruction_utils import infer_in_channels_from_state_dict, lift_views_to_volume, project_volume_batch
+    from reconstruction_utils import (
+        infer_in_channels_from_state_dict,
+        infer_skip_channels_from_state_dict,
+        lift_views_to_volume,
+        project_volume_batch,
+    )
     from refiner import DetailRefiner
 
 
@@ -49,12 +55,12 @@ def infer_latent_dim(state_dict: dict[str, torch.Tensor]) -> int:
 
 
 def compute_metrics(pred: torch.Tensor, target: torch.Tensor) -> dict[str, float]:
-    pred_bin = (pred > 0.5).float()
+    pred_bin = (torch.sigmoid(pred) > 0.5).float()
     intersection = float((pred_bin * target).sum().item())
     union = float(pred_bin.sum().item() + target.sum().item())
     dice = (2.0 * intersection + 1.0) / (union + 1.0)
     iou = (intersection + 1.0) / (union - intersection + 1.0)
-    mse = float(((pred - target) ** 2).mean().item())
+    mse = float(((torch.sigmoid(pred) - target) ** 2).mean().item())
     return {"dice": dice, "iou": iou, "mse": mse}
 
 
@@ -63,13 +69,35 @@ def projection_l1(pred_volume: torch.Tensor, inputs: torch.Tensor, view_names: t
     return float(torch.abs(projected - inputs).mean().item())
 
 
+@torch.no_grad()
+def tta_predict(
+    model: TriViewAutoencoder,
+    inputs: torch.Tensor,
+) -> torch.Tensor:
+    """Test-Time Augmentation: горизонтальный flip + average.
+
+    Для tri-view: горизонтальный flip всех проекций = mirror 3D по width (последняя ось).
+    """
+    pred_original = model(inputs)
+
+    inputs_flipped = inputs.flip(-1)
+    pred_flipped = model(inputs_flipped)
+    pred_unflipped = pred_flipped.flip(-1)
+
+    return (pred_original + pred_unflipped) / 2.0
+
+
 def build_prediction(
     base_model: TriViewAutoencoder,
     inputs: torch.Tensor,
     refiner: DetailRefiner | None,
     view_names: tuple[str, ...],
+    use_tta: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    coarse = base_model(inputs)
+    if use_tta:
+        coarse = tta_predict(base_model, inputs)
+    else:
+        coarse = base_model(inputs)
     if refiner is None:
         return coarse, coarse
     lifted = lift_views_to_volume(inputs, view_names)
@@ -83,6 +111,7 @@ def evaluate_dataset(
     base_model: TriViewAutoencoder,
     refiner: DetailRefiner | None,
     device: torch.device,
+    use_tta: bool = True,
 ) -> pd.DataFrame:
     loader = DataLoader(dataset, batch_size=1, shuffle=False)
     records: list[dict[str, object]] = []
@@ -90,9 +119,11 @@ def evaluate_dataset(
     for batch in loader:
         inputs = batch["input"].to(device)
         target = batch["target_3d"].to(device)
-        coarse, final = build_prediction(base_model, inputs, refiner, dataset.view_names)
 
-        # reprojection error на входных 2D views для coarse и final
+        coarse, final = build_prediction(
+            base_model, inputs, refiner, dataset.view_names, use_tta=use_tta
+        )
+
         coarse_proj = projection_l1(coarse, inputs, dataset.view_names)
         final_proj = projection_l1(final, inputs, dataset.view_names)
 
@@ -190,8 +221,9 @@ def main() -> None:
     parser.add_argument("--autoencoder", type=str, default="results/best_autoencoder.pt")
     parser.add_argument("--refiner", type=str, default="")
     parser.add_argument("--output_dir", type=str, default="results")
-    parser.add_argument("--input_mode", type=str, default="quad", choices=["tri", "quad"])
+    parser.add_argument("--input_mode", type=str, default="tri", choices=["tri", "quad"])
     parser.add_argument("--hard_quantile", type=float, default=0.8)
+    parser.add_argument("--no_tta", action="store_true", help="Disable TTA")
     args = parser.parse_args()
 
     device = select_device()
@@ -201,12 +233,15 @@ def main() -> None:
     base_state_dict = unwrap_state_dict(base_checkpoint)
     in_channels = infer_in_channels_from_state_dict(base_state_dict)
     latent_dim = infer_latent_dim(base_state_dict)
+    skip_channels = infer_skip_channels_from_state_dict(base_state_dict)
     if in_channels != len(test_ds.view_names):
         raise ValueError(
             f"Checkpoint expects {in_channels} channels, dataset input_mode={args.input_mode} gives {len(test_ds.view_names)}"
         )
 
-    base_model = TriViewAutoencoder(latent_dim=latent_dim, in_channels=in_channels).to(device)
+    base_model = TriViewAutoencoder(
+        latent_dim=latent_dim, in_channels=in_channels, skip_channels=skip_channels
+    ).to(device)
     base_model.load_state_dict(base_state_dict)
     base_model.eval()
 
@@ -216,7 +251,9 @@ def main() -> None:
         refiner.load_state_dict(torch.load(args.refiner, map_location=device))
         refiner.eval()
 
-    result_df = evaluate_dataset(test_ds, base_model, refiner, device)
+    result_df = evaluate_dataset(
+        test_ds, base_model, refiner, device, use_tta=not args.no_tta
+    )
     summary = summarize_results(result_df, hard_quantile=args.hard_quantile)
 
     output_dir = Path(args.output_dir)

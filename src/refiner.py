@@ -56,6 +56,6 @@ class DetailRefiner(nn.Module):
         residual_logits = self.head(features)
 
         # Раньше тут был torch.logit(coarse), но теперь это и есть coarse_logits
-        gating = 0.25 + uncertainty
+        gating = uncertainty * 1.25
         refined_logits = coarse_logits + gating * residual_logits
         return refined_logits

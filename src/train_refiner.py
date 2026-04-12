@@ -247,10 +247,11 @@ def train(
     input_mode: str = "tri",
     bce_weight: float = 0.35,
     dice_weight: float = 0.25,
-    projection_weight: float = 0.25,
+    projection_weight: float = 0.5,
     surface_weight: float = 0.15,
-    boundary_boost: float = 4.0,
+    boundary_boost: float = 2.0,
     complexity_boost: float = 1.0,
+    warmup_epochs: int = 5,
     num_workers: int = 0,
     seed: int = 42,
 ) -> None:
@@ -263,7 +264,7 @@ def train(
     base_in_channels = infer_in_channels_from_state_dict(state_dict)
     latent_dim = infer_latent_dim_from_state_dict(state_dict)
 
-    train_ds = CellTriViewDataset(data_dir, split="train", seed=seed, input_mode=input_mode)
+    train_ds = CellTriViewDataset(data_dir, split="train", seed=seed, input_mode=input_mode, augment=True)
     test_ds = CellTriViewDataset(data_dir, split="test", seed=seed, input_mode=input_mode)
     view_names = train_ds.view_names
     if len(view_names) != base_in_channels:
@@ -276,19 +277,27 @@ def train(
     train_loader = build_loader(train_ds, batch_size, num_workers, sampler=sampler)
     test_loader = build_loader(test_ds, batch_size, num_workers)
 
-    base_model = TriViewAutoencoder(latent_dim=latent_dim, in_channels=base_in_channels).to(device)
+    base_model = TriViewAutoencoder(latent_dim=latent_dim, in_channels=base_in_channels, skip_channels=base_in_channels).to(device)
     base_model.load_state_dict(state_dict)
     base_model.eval()
     for parameter in base_model.parameters():
         parameter.requires_grad = False
 
     refiner = DetailRefiner(view_channels=len(view_names)).to(device)
-    optimizer = torch.optim.Adam(refiner.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer = torch.optim.AdamW(refiner.parameters(), lr=lr, weight_decay=1e-4)
+    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.1, total_iters=warmup_epochs
+    )
+    main_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode="max",
         factor=0.5,
         patience=4,
+    )
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[warmup_scheduler, main_scheduler],
+        milestones=[warmup_epochs],
     )
     scaler = GradScaler() if device.type == "cuda" else None
     hard_threshold = test_ds.hard_threshold(quantile=0.8)
@@ -312,6 +321,7 @@ def train(
             "epochs": epochs,
             "batch_size": batch_size,
             "lr": lr,
+            "skip_channels": len(view_names),
             "seed": seed,
         },
     }
@@ -398,10 +408,11 @@ def main() -> None:
     parser.add_argument("--input_mode", type=str, default="tri", choices=["tri", "quad"])
     parser.add_argument("--bce_weight", type=float, default=0.35)
     parser.add_argument("--dice_weight", type=float, default=0.25)
-    parser.add_argument("--projection_weight", type=float, default=0.25)
+    parser.add_argument("--projection_weight", type=float, default=0.5)
     parser.add_argument("--surface_weight", type=float, default=0.15)
-    parser.add_argument("--boundary_boost", type=float, default=4.0)
+    parser.add_argument("--boundary_boost", type=float, default=2.0)
     parser.add_argument("--complexity_boost", type=float, default=1.0)
+    parser.add_argument("--warmup_epochs", type=int, default=5)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -420,6 +431,7 @@ def main() -> None:
         surface_weight=args.surface_weight,
         boundary_boost=args.boundary_boost,
         complexity_boost=args.complexity_boost,
+        warmup_epochs=args.warmup_epochs,
         num_workers=args.num_workers,
         seed=args.seed,
     )

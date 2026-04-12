@@ -18,14 +18,17 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
-
-from autoencoder import TriViewAutoencoder
-from classifier import LatentClassifier, MorphometryRFClassifier
-from dataset import CellTriViewDataset
+from sklearn.model_selection import StratifiedShuffleSplit
 
 try:
+    from src.autoencoder import TriViewAutoencoder
+    from src.classifier import LatentClassifier, MorphometryRFClassifier
+    from src.dataset import CellTriViewDataset
     from src.reconstruction_utils import infer_in_channels_from_state_dict
 except ImportError:
+    from autoencoder import TriViewAutoencoder
+    from classifier import LatentClassifier, MorphometryRFClassifier
+    from dataset import CellTriViewDataset
     from reconstruction_utils import infer_in_channels_from_state_dict
 
 
@@ -35,12 +38,11 @@ def train_random_forest(data_dir: str, output_dir: str) -> None:
 
     df = pd.read_csv(os.path.join(data_dir, "metadata.csv"))
 
-    # Split
-    rng = np.random.RandomState(42)
-    idx = rng.permutation(len(df))
-    n_train = int(len(df) * 0.8)
-    train_df = df.iloc[idx[:n_train]]
-    test_df = df.iloc[idx[n_train:]]
+    splitter = StratifiedShuffleSplit(n_splits=1, train_size=0.8, random_state=42)
+    stratify_col = df["cell_type"].astype(str) if df["cell_type"].nunique() >= 2 else df["label"].astype(str)
+    train_idx, test_idx = next(splitter.split(df, stratify_col))
+    train_df = df.iloc[train_idx]
+    test_df = df.iloc[test_idx]
 
     print(f"Train: {len(train_df)}, Test: {len(test_df)}")
 
@@ -76,6 +78,40 @@ def train_random_forest(data_dir: str, output_dir: str) -> None:
     print(f"\nРезультаты: {output_dir}/metrics/rf_results.json")
 
 
+def compute_3d_morphometrics(volume_3d: np.ndarray) -> dict[str, float]:
+    """Вычисляет морфометрические признаки из предсказанного 3D объёма."""
+    vol_bin = (volume_3d > 0.5).astype(np.float32)
+    volume = float(vol_bin.sum())
+
+    from scipy.ndimage import binary_erosion, binary_dilation, distance_transform_edt, convex_hull_image
+
+    if volume < 10:
+        return {"volume": volume, "sphericity": 0.0, "convexity": 0.0, "surface_area": 0.0, "compactness": 0.0}
+
+    surface = binary_dilation(vol_bin, iterations=1) - binary_erosion(vol_bin, iterations=1)
+    surface_area = float(surface.sum())
+
+    try:
+        hull = convex_hull_image(vol_bin)
+        hull_volume = float(hull.sum())
+        convexity = volume / (hull_volume + 1e-8)
+    except Exception:
+        convexity = 1.0
+
+    dt = distance_transform_edt(vol_bin)
+    max_inradius = float(dt.max())
+    sphericity = (np.pi ** (1 / 3) * (6 * volume) ** (2 / 3)) / (surface_area + 1e-8)
+    compactness = max_inradius ** 3 / (volume + 1e-8)
+
+    return {
+        "volume": volume,
+        "sphericity": float(sphericity),
+        "convexity": float(convexity),
+        "surface_area": surface_area,
+        "compactness": float(compactness),
+    }
+
+
 def train_latent_classifier(
     data_dir: str,
     autoencoder_path: str,
@@ -85,8 +121,8 @@ def train_latent_classifier(
     batch_size: int = 16,
     lr: float = 1e-3,
     latent_dim: int = 256,
+    patience: int = 8,
 ) -> None:
-    """Обучение MLP классификатора на latent vectors."""
     print("=== Latent Classifier (MLP) ===")
 
     if torch.cuda.is_available():
@@ -96,7 +132,6 @@ def train_latent_classifier(
     else:
         device = torch.device("cpu")
 
-    # Загрузка autoencoder
     checkpoint = torch.load(autoencoder_path, map_location=device)
     state_dict = checkpoint.get("model_state_dict", checkpoint)
     in_channels = infer_in_channels_from_state_dict(state_dict)
@@ -106,21 +141,21 @@ def train_latent_classifier(
     autoencoder.eval()
     print(f"Autoencoder загружен: {autoencoder_path}")
 
-    # Данные
     train_ds = CellTriViewDataset(data_dir, split="train", input_mode=input_mode)
     test_ds = CellTriViewDataset(data_dir, split="test", input_mode=input_mode)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
 
-    # Классификатор
-    classifier = LatentClassifier(latent_dim=latent_dim).to(device)
+    n_morpho = 5
+    classifier = LatentClassifier(latent_dim=latent_dim + n_morpho).to(device)
     optimizer = torch.optim.Adam(classifier.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=3)
     criterion = torch.nn.CrossEntropyLoss()
 
     best_acc = 0.0
+    patience_counter = 0
 
     for epoch in range(1, epochs + 1):
-        # Train
         classifier.train()
         total_loss = 0.0
         correct = 0
@@ -129,11 +164,20 @@ def train_latent_classifier(
         for batch in train_loader:
             inputs = batch["input"].to(device)
             labels = batch["label"].to(device)
+            target_3d = batch["target_3d"]
 
             with torch.no_grad():
                 z = autoencoder.encode(inputs)
 
-            logits = classifier(z)
+            morpho_list = []
+            for i in range(target_3d.size(0)):
+                vol = target_3d[i, 0].cpu().numpy()
+                m = compute_3d_morphometrics(vol)
+                morpho_list.append([m["volume"], m["sphericity"], m["convexity"], m["surface_area"], m["compactness"]])
+            morpho_tensor = torch.tensor(morpho_list, dtype=torch.float32, device=device)
+
+            combined = torch.cat([z, morpho_tensor], dim=1)
+            logits = classifier(combined)
             loss = criterion(logits, labels)
 
             optimizer.zero_grad()
@@ -146,7 +190,6 @@ def train_latent_classifier(
 
         train_acc = correct / total
 
-        # Test
         classifier.eval()
         test_correct = 0
         test_total = 0
@@ -155,12 +198,24 @@ def train_latent_classifier(
             for batch in test_loader:
                 inputs = batch["input"].to(device)
                 labels = batch["label"].to(device)
+                target_3d = batch["target_3d"]
+
                 z = autoencoder.encode(inputs)
-                logits = classifier(z)
+
+                morpho_list = []
+                for i in range(target_3d.size(0)):
+                    vol = target_3d[i, 0].cpu().numpy()
+                    m = compute_3d_morphometrics(vol)
+                    morpho_list.append([m["volume"], m["sphericity"], m["convexity"], m["surface_area"], m["compactness"]])
+                morpho_tensor = torch.tensor(morpho_list, dtype=torch.float32, device=device)
+
+                combined = torch.cat([z, morpho_tensor], dim=1)
+                logits = classifier(combined)
                 test_correct += (logits.argmax(1) == labels).sum().item()
                 test_total += len(labels)
 
         test_acc = test_correct / test_total
+        scheduler.step(test_acc)
 
         if epoch % 5 == 0 or epoch == 1:
             print(
@@ -170,10 +225,17 @@ def train_latent_classifier(
 
         if test_acc > best_acc:
             best_acc = test_acc
+            patience_counter = 0
             torch.save(
                 classifier.state_dict(),
                 os.path.join(output_dir, "best_classifier.pt"),
             )
+        else:
+            patience_counter += 1
+
+        if patience_counter >= patience:
+            print(f"Early stopping: no improvement for {patience} epochs")
+            break
 
     print(f"\nBest test accuracy: {best_acc:.4f}")
 

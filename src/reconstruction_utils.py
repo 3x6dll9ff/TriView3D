@@ -26,6 +26,13 @@ def infer_in_channels_from_state_dict(state_dict: dict[str, torch.Tensor]) -> in
     raise KeyError("Не удалось найти входной сверточный слой (conv.0.weight) в state_dict")
 
 
+def infer_skip_channels_from_state_dict(state_dict: dict[str, torch.Tensor]) -> int:
+    for key in state_dict.keys():
+        if "decoder.skip0.0.weight" in key:
+            return int(state_dict[key].shape[1])
+    return 0
+
+
 def _safe_zscore(values: np.ndarray) -> np.ndarray:
     values = values.astype(np.float32)
     std = float(values.std())

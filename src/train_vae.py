@@ -20,8 +20,9 @@ import time
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import numpy as np
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch.cuda.amp import GradScaler, autocast
 
 from src.vae import TriViewCVAE, best_of_k_generate, vae_loss
@@ -138,10 +139,10 @@ def evaluate(
         inputs = batch["input"].to(device, non_blocking=True)
         target_3d = batch["target_3d"].to(device, non_blocking=True)
 
-        pred, best_score = best_of_k_generate(model, inputs, view_names, num_samples=eval_samples_k)
+        pred_logits, best_score = best_of_k_generate(model, inputs, view_names, num_samples=eval_samples_k)
         mu, logvar = model.encode(inputs)
         loss, components = vae_loss(
-            pred,
+            pred_logits,
             target_3d,
             mu,
             logvar,
@@ -157,7 +158,8 @@ def evaluate(
         total_loss += loss.item() * inputs.size(0)
         total_projection += float(best_score.sum().item())
 
-        pred_bin = (pred > 0.5).float()
+        pred_probs = torch.sigmoid(pred_logits)
+        pred_bin = (pred_probs > 0.5).float()
         intersection = (pred_bin * target_3d).sum(dim=(1, 2, 3, 4))
         union = pred_bin.sum(dim=(1, 2, 3, 4)) + target_3d.sum(dim=(1, 2, 3, 4))
 
@@ -178,8 +180,11 @@ def evaluate(
 
 def set_seed(seed: int = 42) -> None:
     random.seed(seed)
+    np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def current_git_hash() -> str | None:
@@ -200,10 +205,13 @@ def train(
     input_mode: str = "tri",
     bce_weight: float = 0.35,
     dice_weight: float = 0.25,
-    projection_weight: float = 0.25,
+    projection_weight: float = 0.5,
     surface_weight: float = 0.15,
-    boundary_boost: float = 4.0,
+    boundary_boost: float = 2.0,
     eval_samples_k: int = 8,
+    warmup_epochs: int = 5,
+    complexity_sampling: bool = True,
+    complexity_boost: float = 1.0,
     seed: int = 42,
 ) -> None:
     set_seed(seed)
@@ -216,26 +224,41 @@ def train(
     print(f"Device: {device}")
 
     # Данные — тот же split что и CNN
-    train_ds = CellTriViewDataset(data_dir, split="train", seed=seed, input_mode=input_mode)
+    train_ds = CellTriViewDataset(data_dir, split="train", seed=seed, input_mode=input_mode, augment=True)
     test_ds = CellTriViewDataset(data_dir, split="test", seed=seed, input_mode=input_mode)
     print(f"Train: {len(train_ds)}, Test: {len(test_ds)}")
     view_names = train_ds.view_names
 
     num_workers = min(4, os.cpu_count() or 1)
+
+    train_sampler = None
+    if complexity_sampling:
+        weights = train_ds.build_sample_weights(complexity_boost=complexity_boost)
+        train_sampler = WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+
     train_loader = DataLoader(
-        train_ds, batch_size=batch_size, shuffle=True, 
+        train_ds, batch_size=batch_size, shuffle=train_sampler is None,
+        sampler=train_sampler,
         num_workers=num_workers, pin_memory=True
     )
     test_loader = DataLoader(
-        test_ds, batch_size=batch_size, shuffle=False, 
+        test_ds, batch_size=batch_size, shuffle=False,
         num_workers=num_workers, pin_memory=True
     )
 
     # Модель
-    model = TriViewCVAE(latent_dim=latent_dim, in_channels=len(view_names)).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    model = TriViewCVAE(latent_dim=latent_dim, in_channels=len(view_names), skip_channels=len(view_names)).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.1, total_iters=warmup_epochs
+    )
+    main_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode="min", factor=0.5, patience=5
+    )
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[warmup_scheduler, main_scheduler],
+        milestones=[warmup_epochs],
     )
 
     n_params = sum(p.numel() for p in model.parameters())
@@ -263,6 +286,8 @@ def train(
         "surface_weight": surface_weight,
         "boundary_boost": boundary_boost,
         "eval_samples_k": eval_samples_k,
+        "warmup_epochs": warmup_epochs,
+        "skip_channels": len(view_names),
         "seed": seed,
     }
     
@@ -370,10 +395,13 @@ def main():
     parser.add_argument("--input_mode", type=str, default="tri", choices=["tri", "quad"])
     parser.add_argument("--bce_weight", type=float, default=0.35)
     parser.add_argument("--dice_weight", type=float, default=0.25)
-    parser.add_argument("--projection_weight", type=float, default=0.25)
+    parser.add_argument("--projection_weight", type=float, default=0.5)
     parser.add_argument("--surface_weight", type=float, default=0.15)
-    parser.add_argument("--boundary_boost", type=float, default=4.0)
+    parser.add_argument("--boundary_boost", type=float, default=2.0)
     parser.add_argument("--eval_samples_k", type=int, default=8)
+    parser.add_argument("--warmup_epochs", type=int, default=5)
+    parser.add_argument("--no_complexity_sampling", action="store_true")
+    parser.add_argument("--complexity_boost", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -382,7 +410,9 @@ def main():
         args.batch_size, args.lr, args.latent_dim, args.kl_weight,
         args.input_mode, args.bce_weight, args.dice_weight,
         args.projection_weight, args.surface_weight, args.boundary_boost,
-        args.eval_samples_k, args.seed,
+        args.eval_samples_k, args.warmup_epochs,
+        not args.no_complexity_sampling, args.complexity_boost,
+        args.seed,
     )
 
 

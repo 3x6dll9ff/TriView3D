@@ -22,6 +22,49 @@ except ImportError:
     from reconstruction_utils import get_view_names, load_view_stack
 
 
+class RandomHFlip2D3D:
+    """Горизонтальный flip 2D проекций + соответствующий flip 3D volume."""
+
+    def __init__(self, p: float = 0.5) -> None:
+        self.p = p
+
+    def __call__(
+        self, tri_input: np.ndarray, target_3d: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if np.random.random() < self.p:
+            tri_input = tri_input[:, :, ::-1].copy()
+            target_3d = target_3d[..., ::-1].copy()
+        return tri_input, target_3d
+
+
+class GaussianNoise:
+    """Гауссов шум на проекции (input-only)."""
+
+    def __init__(self, sigma: float = 0.03) -> None:
+        self.sigma = sigma
+
+    def __call__(self, tri_input: np.ndarray) -> np.ndarray:
+        noise = np.random.randn(*tri_input.shape).astype(np.float32) * self.sigma
+        return np.clip(tri_input + noise, 0.0, 1.0).astype(np.float32)
+
+
+class BrightnessJitter:
+    """Яркость/контраст на проекции (input-only)."""
+
+    def __init__(self, brightness: float = 0.1, contrast: float = 0.1) -> None:
+        self.brightness = brightness
+        self.contrast = contrast
+
+    def __call__(self, tri_input: np.ndarray) -> np.ndarray:
+        if self.brightness > 0:
+            delta = np.random.uniform(-self.brightness, self.brightness)
+            tri_input = np.clip(tri_input + delta, 0.0, 1.0)
+        if self.contrast > 0:
+            alpha = np.random.uniform(1.0 - self.contrast, 1.0 + self.contrast)
+            tri_input = np.clip((tri_input - 0.5) * alpha + 0.5, 0.0, 1.0)
+        return tri_input.astype(np.float32)
+
+
 class CellTriViewDataset(Dataset):
     """Dataset для multi-view 3D реконструкции и классификации."""
 
@@ -33,11 +76,18 @@ class CellTriViewDataset(Dataset):
         seed: int = 42,
         transform=None,
         input_mode: str = "quad",
+        augment: bool = False,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.transform = transform
         self.input_mode = input_mode
         self.view_names = get_view_names(input_mode)
+        self.augment = augment
+
+        if augment:
+            self._flip = RandomHFlip2D3D(p=0.5)
+            self._noise = GaussianNoise(sigma=0.03)
+            self._brightness = BrightnessJitter(brightness=0.1, contrast=0.1)
 
         csv_path = self.data_dir / "metadata.csv"
         self.df = pd.read_csv(csv_path)
@@ -114,6 +164,11 @@ class CellTriViewDataset(Dataset):
 
         tri_input = load_view_stack(self.data_dir, name, self.input_mode)
         target_3d = np.load(self.data_dir / "obj" / f"{name}.npy").astype(np.float32)[np.newaxis, ...]
+
+        if self.augment:
+            tri_input, target_3d = self._flip(tri_input, target_3d)
+            tri_input = self._noise(tri_input)
+            tri_input = self._brightness(tri_input)
 
         if self.transform:
             tri_input = self.transform(tri_input)
