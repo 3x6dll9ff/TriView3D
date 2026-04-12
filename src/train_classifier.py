@@ -80,7 +80,11 @@ def compute_3d_morphometrics(volume_3d: np.ndarray) -> dict[str, float]:
     vol_bin = (volume_3d > 0.5).astype(np.float32)
     volume = float(vol_bin.sum())
 
-    from scipy.ndimage import binary_erosion, binary_dilation, distance_transform_edt, convex_hull_image
+    from scipy.ndimage import binary_erosion, binary_dilation, distance_transform_edt
+    try:
+        from scipy.ndimage import convex_hull_image
+    except ImportError:
+        from skimage.morphology import convex_hull_image
 
     if volume < 10:
         return {"volume": volume, "sphericity": 0.0, "convexity": 0.0, "surface_area": 0.0, "compactness": 0.0}
