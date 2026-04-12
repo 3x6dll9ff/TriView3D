@@ -414,10 +414,22 @@ body {
 
 .top-block-pipeline {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 12px;
   padding: 16px 24px;
   min-width: 280px;
+}
+
+.overlay-controls {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  width: 100%;
 }
 
 .top-block-empty {
@@ -622,6 +634,80 @@ body {
   font-size: 11px;
   font-family: var(--font-mono);
   color: var(--text-primary);
+}
+
+/* ── Overlay Controls ───────────────────────────────────────────── */
+.overlay-btn {
+  padding: 6px 14px;
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  transition: all 0.15s;
+}
+.overlay-btn:hover {
+  color: var(--text-primary);
+  border-color: var(--border-hover);
+}
+.overlay-btn-active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.overlay-slider-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.overlay-slider-label {
+  font-size: 9px;
+  font-family: var(--font-mono);
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.overlay-slider {
+  width: 100px;
+  height: 3px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--border);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+.overlay-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+}
+.overlay-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+}
+
+.overlay-slider-val {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+  min-width: 32px;
 }
 
 /* ── 3D Viewports ────────────────────────────────────────────────── */

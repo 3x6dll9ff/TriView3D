@@ -89,11 +89,13 @@ const circleTexture = (() => {
   return new THREE.CanvasTexture(canvas)
 })()
 
-function CellMesh({ vertices, indices, color }: {
+function CellMesh({ vertices, indices, color, baseOpacity }: {
   vertices: number[]
   indices: number[]
   color: string
+  baseOpacity?: number
 }) {
+  const op = baseOpacity ?? 0.18
   const geometry = useMemo(() => {
     if (!vertices?.length || !indices?.length) return null
 
@@ -120,13 +122,13 @@ function CellMesh({ vertices, indices, color }: {
 
   if (!geometry) return null
 
-  return (
+    return (
     <group>
       <mesh geometry={geometry}>
         <meshStandardMaterial
           color={color}
           transparent
-          opacity={0.18}
+          opacity={op}
           side={THREE.DoubleSide}
           roughness={0.6}
           metalness={0.05}
@@ -160,10 +162,13 @@ function CellMesh({ vertices, indices, color }: {
   )
 }
 
-function Scene({ meshData, color, label }: {
+function Scene({ meshData, color, label, overlayMesh, overlayColor, overlayOpacity }: {
   meshData: { vertices: number[]; indices: number[] } | null
   color: string
   label: string
+  overlayMesh?: { vertices: number[]; indices: number[] } | null
+  overlayColor?: string
+  overlayOpacity?: number
 }) {
   return (
     <div className="scene-container">
@@ -178,6 +183,14 @@ function Scene({ meshData, color, label }: {
         <ScaleBar />
         {meshData && (
           <CellMesh vertices={meshData.vertices} indices={meshData.indices} color={color} />
+        )}
+        {overlayMesh && overlayColor && (
+          <CellMesh
+            vertices={overlayMesh.vertices}
+            indices={overlayMesh.indices}
+            color={overlayColor}
+            baseOpacity={(overlayOpacity ?? 0.5) * 0.18}
+          />
         )}
         <SyncedControls />
       </Canvas>
@@ -279,6 +292,8 @@ function App() {
   }, [loading, cnnData])
 
   const hasResults = cnnData || vaeData
+  const [overlay, setOverlay] = useState(false)
+  const [overlayOpacity, setOverlayOpacity] = useState(0.6)
 
   return (
     <div className="app">
@@ -342,47 +357,81 @@ function App() {
 
               <div className="top-block-pipeline">
                 <PipelineTracker activeStage={activeStage} />
+                {hasResults && (
+                  <div className="overlay-controls">
+                    <button
+                      className={`overlay-btn ${overlay ? 'overlay-btn-active' : ''}`}
+                      onClick={() => setOverlay(!overlay)}
+                    >
+                      Overlay
+                    </button>
+                    {overlay && (
+                      <div className="overlay-slider-wrap">
+                        <span className="overlay-slider-label">GT</span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={overlayOpacity}
+                          onChange={e => setOverlayOpacity(parseFloat(e.target.value))}
+                          className="overlay-slider"
+                        />
+                        <span className="overlay-slider-val">{Math.round(overlayOpacity * 100)}%</span>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </section>
 
             {(loading || hasResults) && (
               <section className={`viewports ${vaeData ? 'viewports-3' : ''}`}>
-                <div className="viewport">
-                  {cnnData && <MetricStrip metrics={buildMetrics(cnnData)} />}
-                  {loading && !cnnData && (
-                    <div className="viewport-loading">
-                      <div className="spinner" />
-                    </div>
-                  )}
-                  <Scene
-                    meshData={cnnData?.pred}
-                    color="#4fffff"
-                    label="CNN Prediction"
-                  />
-                </div>
-                {vaeData && (
                   <div className="viewport">
-                    <MetricStrip metrics={buildMetrics(vaeData)} />
+                    {cnnData && <MetricStrip metrics={buildMetrics(cnnData)} />}
+                    {loading && !cnnData && (
+                      <div className="viewport-loading">
+                        <div className="spinner" />
+                      </div>
+                    )}
                     <Scene
-                      meshData={vaeData?.pred}
-                      color="#a0c4ff"
-                      label="VAE Generation"
+                      meshData={cnnData?.pred}
+                      color="#4fffff"
+                      label="CNN Prediction"
+                      overlayMesh={overlay ? cnnData?.gt : undefined}
+                      overlayColor="#ef4444"
+                      overlayOpacity={overlayOpacity}
                     />
                   </div>
-                )}
-                <div className="viewport">
-                  {cnnData && <MetricStrip metrics={[
-                    { key: 'gt_info', label: 'Ground Truth', value: 'reference' },
-                    { key: 'gt_dice', label: 'Ref Dice', value: cnnData?.dice ?? '—' },
-                    { key: 'gt_reproj', label: 'Reproj L1', value: cnnData?.metrics?.reprojection_l1 ?? '—' },
-                    { key: 'gt_vol', label: 'Vol Diff', value: cnnData?.metrics?.volume_diff_pct ?? '—', unit: '%' },
-                  ]} />}
-                  <Scene
-                    meshData={cnnData?.gt}
-                    color="#a5d8ff"
-                    label="Ground Truth"
-                  />
-                </div>
+                  {vaeData && (
+                    <div className="viewport">
+                      <MetricStrip metrics={buildMetrics(vaeData)} />
+                      <Scene
+                        meshData={vaeData?.pred}
+                        color="#a0c4ff"
+                        label="VAE Generation"
+                        overlayMesh={overlay ? cnnData?.gt : undefined}
+                        overlayColor="#ef4444"
+                        overlayOpacity={overlayOpacity}
+                      />
+                    </div>
+                  )}
+                  <div className="viewport">
+                    {cnnData && <MetricStrip metrics={[
+                      { key: 'gt_info', label: 'Ground Truth', value: 'reference' },
+                      { key: 'gt_dice', label: 'Ref Dice', value: cnnData?.dice ?? '—' },
+                      { key: 'gt_reproj', label: 'Reproj L1', value: cnnData?.metrics?.reprojection_l1 ?? '—' },
+                      { key: 'gt_vol', label: 'Vol Diff', value: cnnData?.metrics?.volume_diff_pct ?? '—', unit: '%' },
+                    ]} />}
+                    <Scene
+                      meshData={cnnData?.gt}
+                      color="#a5d8ff"
+                      label="Ground Truth"
+                      overlayMesh={overlay ? cnnData?.pred : undefined}
+                      overlayColor="#4fffff"
+                      overlayOpacity={overlayOpacity}
+                    />
+                  </div>
               </section>
             )}
 
