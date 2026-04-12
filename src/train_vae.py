@@ -400,6 +400,7 @@ def main():
     parser.add_argument("--no_complexity_sampling", action="store_true")
     parser.add_argument("--complexity_boost", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--num_workers", type=int, default=2)
     args = parser.parse_args()
 
     train(
