@@ -248,6 +248,22 @@ interface CellInfo { filename: string; score: string; type: string }
 interface MetricDef { key: string; label: string; value: number | string; unit?: string }
 type PreviewMap = Record<string, string>
 
+interface PredictionEntry {
+  id: number
+  timestamp: string
+  filename: string
+  cellType: string
+  model: string
+  dice: number
+  iou: number
+  precision: number
+  recall: number
+  assd: number | null
+  hd95: number | null
+  volumeDiffPct: number | null
+  reprojectionL1: number | null
+}
+
 const API = import.meta.env.VITE_API_BASE_URL || ''
 
 function App() {
@@ -259,7 +275,11 @@ function App() {
   const [vaeAvailable, setVaeAvailable] = useState(false)
   const [tab, setTab] = useState<'predict' | 'metrics'>('predict')
   const [metricsHistory, setMetricsHistory] = useState<any[]>([])
+  const [vaeHistory, setVaeHistory] = useState<any[]>([])
+  const [vaeRaw, setVaeRaw] = useState<any>(null)
   const [preview, setPreview] = useState<PreviewMap | null>(null)
+  const [predLog, setPredLog] = useState<PredictionEntry[]>([])
+  const [metricsSub, setMetricsSub] = useState<'generations' | 'training'>('generations')
 
   useEffect(() => {
     axios.get(`${API}/api/cells`).then(res => {
@@ -268,18 +288,46 @@ function App() {
     }).catch(console.error)
 
     axios.get(`${API}/api/metrics`).then(res => {
-      const lossKey = res.data?.test_loss ? 'test_loss' : 'val_loss'
-      const diceKey = res.data?.test_dice ? 'test_dice' : 'val_dice'
-      const iouKey = res.data?.test_iou ? 'test_iou' : 'val_iou'
-      if (res.data?.train_loss && res.data?.[lossKey]) {
+      const d = res.data
+      if (d?.train_loss) {
+        const lossKey = d?.test_loss ? 'test_loss' : 'val_loss'
+        const diceKey = d?.test_dice ? 'test_dice' : 'val_dice'
+        const iouKey = d?.test_iou ? 'test_iou' : 'val_iou'
         setMetricsHistory(
-          res.data.train_loss.map((_: number, i: number) => ({
+          d.train_loss.map((_: number, i: number) => ({
             epoch: i + 1,
-            train_loss: res.data.train_loss[i],
-            test_loss: res.data[lossKey][i],
-            test_dice: res.data[diceKey]?.[i],
-            test_iou: res.data[iouKey]?.[i],
-            test_hard_dice: res.data.val_hard_dice?.[i],
+            train_loss: d.train_loss[i],
+            train_bce: d.train_bce?.[i],
+            train_dice_loss: d.train_dice_loss?.[i],
+            train_projection: d.train_projection?.[i],
+            train_surface: d.train_surface?.[i],
+            val_loss: d[lossKey]?.[i],
+            val_projection: d.val_projection?.[i],
+            val_dice: d[diceKey]?.[i],
+            val_iou: d[iouKey]?.[i],
+            val_hard_dice: d.val_hard_dice?.[i],
+            val_hard_iou: d.val_hard_iou?.[i],
+          }))
+        )
+      }
+    }).catch(console.error)
+
+    axios.get(`${API}/api/metrics-vae`).then(res => {
+      const d = res.data
+      if (d?.train_loss) {
+        setVaeRaw(d)
+        setVaeHistory(
+          d.train_loss.map((_: number, i: number) => ({
+            epoch: i + 1,
+            train_loss: d.train_loss[i],
+            train_recon: d.train_recon?.[i],
+            train_kl: d.train_kl?.[i],
+            train_projection: d.train_projection?.[i],
+            train_surface: d.train_surface?.[i],
+            test_loss: d.test_loss?.[i],
+            test_projection: d.test_projection?.[i],
+            test_dice: d.test_dice?.[i],
+            test_iou: d.test_iou?.[i],
           }))
         )
       }
@@ -311,12 +359,52 @@ function App() {
       const [cnnRes, vaeRes] = await Promise.all([cnnPromise, vaePromise])
       setCnnData(cnnRes.data)
       if (vaeRes) setVaeData(vaeRes.data)
+
+      const cellInfo = cells.find(c => c.filename === selectedCell)
+      const now = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+
+      if (cnnRes.data) {
+        const m = cnnRes.data.metrics ?? {}
+        setPredLog(prev => [...prev, {
+          id: Date.now(),
+          timestamp: now,
+          filename: selectedCell,
+          cellType: cellInfo?.type ?? '',
+          model: 'CNN+Refiner',
+          dice: m.dice ?? cnnRes.data.dice ?? 0,
+          iou: m.iou ?? 0,
+          precision: m.precision ?? 0,
+          recall: m.recall ?? 0,
+          assd: m.surface_assd ?? null,
+          hd95: m.surface_hd95 ?? null,
+          volumeDiffPct: m.volume_diff_pct ?? null,
+          reprojectionL1: m.reprojection_l1 ?? null,
+        }])
+      }
+      if (vaeRes?.data) {
+        const m = vaeRes.data.metrics ?? {}
+        setPredLog(prev => [...prev, {
+          id: Date.now() + 1,
+          timestamp: now,
+          filename: selectedCell,
+          cellType: cellInfo?.type ?? '',
+          model: 'CVAE',
+          dice: m.dice ?? vaeRes.data.dice ?? 0,
+          iou: m.iou ?? 0,
+          precision: m.precision ?? 0,
+          recall: m.recall ?? 0,
+          assd: m.surface_assd ?? null,
+          hd95: m.surface_hd95 ?? null,
+          volumeDiffPct: m.volume_diff_pct ?? null,
+          reprojectionL1: m.reprojection_l1 ?? null,
+        }])
+      }
     } catch {
       alert('Backend error. Is FastAPI running on :8000?')
     } finally {
       setLoading(false)
     }
-  }, [selectedCell, vaeAvailable])
+  }, [selectedCell, vaeAvailable, cells])
 
   const buildMetrics = (data: any): MetricDef[] => data ? [
     { key: 'dice', label: 'Dice', value: data.metrics?.dice ?? data.dice },
@@ -494,46 +582,265 @@ function App() {
 
         {tab === 'metrics' && (
           <main className="content">
+            <div className="metrics-model-selector">
+              <button
+                className={`metrics-model-btn ${metricsSub === 'generations' ? 'metrics-model-btn-active' : ''}`}
+                onClick={() => setMetricsSub('generations')}
+              >
+                Generations Log
+              </button>
+              <button
+                className={`metrics-model-btn ${metricsSub === 'training' ? 'metrics-model-btn-active' : ''}`}
+                onClick={() => setMetricsSub('training')}
+              >
+                Training Curves
+              </button>
+            </div>
+
+            {metricsSub === 'generations' && (
+              <>
+            {predLog.length > 0 && (
+              <>
             <section className="chart-section">
-              <h2 className="chart-title">Loss Convergence</h2>
-              <p className="chart-subtitle">BCE + Dice hybrid loss, 50 epochs, Adam lr=1e-3</p>
+              <h2 className="chart-title">Dice Score per Generation</h2>
+              <p className="chart-subtitle">Reconstruction quality across all generated cells</p>
               <div className="chart-container">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={metricsHistory} margin={{ left: 0, bottom: 10 }}>
+                  <LineChart data={predLog.map((e, i) => ({
+                    idx: i + 1,
+                    name: e.filename.replace('.npy', ''),
+                    dice: e.dice,
+                    model: e.model,
+                  }))} margin={{ left: 0, bottom: 10 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
-                    <XAxis dataKey="epoch" stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" />
-                    <YAxis stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" />
+                    <XAxis dataKey="idx" stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" label={{ value: '#', position: 'insideBottomRight', fontSize: 9, fill: 'rgba(255,255,255,0.2)' }} />
+                    <YAxis stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" domain={[0.5, 1.0]} />
                     <Tooltip
                       contentStyle={{ background: '#18181f', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '4px', fontSize: '11px', fontFamily: 'JetBrains Mono' }}
                     />
                     <Legend iconType="circle" />
-                    <Line type="monotone" name="Train Loss" dataKey="train_loss" stroke="#4fffff" strokeWidth={1.5} dot={false} />
-                    <Line type="monotone" name="Test Loss" dataKey="test_loss" stroke="#ef4444" strokeWidth={1.5} dot={false} />
+                    <Line type="monotone" name="Dice" dataKey="dice" stroke="#4fffff" strokeWidth={2} dot={{ r: 4, fill: '#4fffff', stroke: '#4fffff' }} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
             </section>
 
             <section className="chart-section">
-              <h2 className="chart-title">Reconstruction Quality</h2>
-              <p className="chart-subtitle">Dice score and IoU on test set</p>
+              <h2 className="chart-title">Summary Statistics</h2>
+              <p className="chart-subtitle">Aggregated metrics across {predLog.length} generation{predLog.length !== 1 ? 's' : ''}</p>
+              <div className="summary-grid">
+                <div className="summary-header">
+                  <span className="summary-header-label">Metric</span>
+                  <span className="summary-header-val" style={{ color: '#4fffff' }}>CNN+Refiner</span>
+                  <span className="summary-header-val" style={{ color: '#a0c4ff' }}>CVAE</span>
+                </div>
+                {(() => {
+                  const cnnLog = predLog.filter(e => e.model === 'CNN+Refiner')
+                  const vaeLog = predLog.filter(e => e.model === 'CVAE')
+                  const avg = (arr: number[]) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0
+                  const mn = (arr: number[]) => arr.length ? Math.min(...arr) : 0
+                  const mx = (arr: number[]) => arr.length ? Math.max(...arr) : 0
+                  const rows = [
+                    { label: 'Generations', cnn: cnnLog.length, vae: vaeLog.length },
+                    { label: 'Avg Dice', cnn: avg(cnnLog.map(e => e.dice)).toFixed(4), vae: avg(vaeLog.map(e => e.dice)).toFixed(4) },
+                    { label: 'Min Dice', cnn: mn(cnnLog.map(e => e.dice)).toFixed(4), vae: mn(vaeLog.map(e => e.dice)).toFixed(4) },
+                    { label: 'Max Dice', cnn: mx(cnnLog.map(e => e.dice)).toFixed(4), vae: mx(vaeLog.map(e => e.dice)).toFixed(4) },
+                    { label: 'Avg IoU', cnn: avg(cnnLog.map(e => e.iou)).toFixed(4), vae: avg(vaeLog.map(e => e.iou)).toFixed(4) },
+                    { label: 'Avg ASSD', cnn: avg(cnnLog.map(e => e.assd ?? 0)).toFixed(2), vae: avg(vaeLog.map(e => e.assd ?? 0)).toFixed(2) },
+                    { label: 'Avg HD95', cnn: avg(cnnLog.map(e => e.hd95 ?? 0)).toFixed(2), vae: avg(vaeLog.map(e => e.hd95 ?? 0)).toFixed(2) },
+                  ]
+                  return rows.map(r => (
+                    <div key={r.label} className="summary-row">
+                      <span className="summary-label">{r.label}</span>
+                      <span className="summary-val" style={{ color: cnnLog.length ? '#4fffff' : 'var(--text-muted)' }}>{String(r.cnn)}</span>
+                      <span className="summary-val" style={{ color: vaeLog.length ? '#a0c4ff' : 'var(--text-muted)' }}>{String(r.vae)}</span>
+                    </div>
+                  ))
+                })()}
+              </div>
+            </section>
+              </>
+            )}
+
+            <section className="chart-section">
+              <h2 className="chart-title">Generation History</h2>
+              <p className="chart-subtitle">{predLog.length ? `${predLog.length} generation${predLog.length !== 1 ? 's' : ''} recorded` : 'Generate cells in the Predictor tab to see results here'}</p>
+              {predLog.length > 0 ? (
+                <div className="gen-table-wrap">
+                  <table className="gen-table">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Time</th>
+                        <th>Cell</th>
+                        <th>Type</th>
+                        <th>Model</th>
+                        <th>Dice</th>
+                        <th>IoU</th>
+                        <th>Precision</th>
+                        <th>Recall</th>
+                        <th>ASSD</th>
+                        <th>HD95</th>
+                        <th>Vol Diff</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {predLog.map((e, i) => (
+                        <tr key={e.id}>
+                          <td>{i + 1}</td>
+                          <td className="mono-sm">{e.timestamp}</td>
+                          <td className="mono-sm" title={e.filename}>{e.filename.replace('.npy', '').substring(0, 20)}</td>
+                          <td>{e.cellType}</td>
+                          <td><span className={`model-tag ${e.model === 'CVAE' ? 'model-tag-vae' : 'model-tag-cnn'}`}>{e.model}</span></td>
+                          <td className={`dice-val ${e.dice >= 0.95 ? 'dice-good' : e.dice >= 0.85 ? 'dice-ok' : 'dice-bad'}`}>{e.dice.toFixed(4)}</td>
+                          <td>{e.iou.toFixed(4)}</td>
+                          <td>{e.precision.toFixed(4)}</td>
+                          <td>{e.recall.toFixed(4)}</td>
+                          <td>{e.assd !== null ? e.assd.toFixed(2) : '—'}</td>
+                          <td>{e.hd95 !== null ? e.hd95.toFixed(2) : '—'}</td>
+                          <td>{e.volumeDiffPct !== null ? `${e.volumeDiffPct.toFixed(1)}%` : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="empty-state" style={{ minHeight: 120 }}>No generations yet</div>
+              )}
+            </section>
+              </>
+            )}
+
+            {metricsSub === 'training' && (
+              <>
+            {metricsHistory.length > 0 && (
+            <section className="chart-section">
+              <h2 className="chart-title">CNN Training — Loss Convergence</h2>
+              <p className="chart-subtitle">Composite BCE + Dice + Projection + Surface loss</p>
+              <div className="chart-container">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={metricsHistory} margin={{ left: 0, bottom: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
+                    <XAxis dataKey="epoch" stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" />
+                    <YAxis stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" />
+                    <Tooltip contentStyle={{ background: '#18181f', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '4px', fontSize: '11px', fontFamily: 'JetBrains Mono' }} />
+                    <Legend iconType="circle" />
+                    <Line type="monotone" name="Train Loss" dataKey="train_loss" stroke="#4fffff" strokeWidth={1.5} dot={false} />
+                    <Line type="monotone" name="Val Loss" dataKey="val_loss" stroke="#ef4444" strokeWidth={1.5} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </section>
+            )}
+
+            {metricsHistory.length > 0 && (
+            <section className="chart-section">
+              <h2 className="chart-title">CNN Training — Loss Components</h2>
+              <p className="chart-subtitle">Breakdown: BCE, Dice, Projection, Surface</p>
+              <div className="chart-container">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={metricsHistory} margin={{ left: 0, bottom: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
+                    <XAxis dataKey="epoch" stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" />
+                    <YAxis stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" />
+                    <Tooltip contentStyle={{ background: '#18181f', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '4px', fontSize: '11px', fontFamily: 'JetBrains Mono' }} />
+                    <Legend iconType="circle" />
+                    <Line type="monotone" name="BCE" dataKey="train_bce" stroke="#4fffff" strokeWidth={1.5} dot={false} />
+                    <Line type="monotone" name="Dice" dataKey="train_dice_loss" stroke="#22c55e" strokeWidth={1.5} dot={false} />
+                    <Line type="monotone" name="Projection" dataKey="train_projection" stroke="#f59e0b" strokeWidth={1.5} dot={false} />
+                    <Line type="monotone" name="Surface" dataKey="train_surface" stroke="#a78bfa" strokeWidth={1.5} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </section>
+            )}
+
+            {metricsHistory.length > 0 && (
+            <section className="chart-section">
+              <h2 className="chart-title">CNN Training — Reconstruction Quality</h2>
+              <p className="chart-subtitle">Dice, Hard Dice, IoU on validation set</p>
               <div className="chart-container">
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={metricsHistory} margin={{ left: 0, bottom: 10 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
                     <XAxis dataKey="epoch" stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" />
                     <YAxis stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" domain={[0.5, 1.0]} />
-                    <Tooltip
-                      contentStyle={{ background: '#18181f', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '4px', fontSize: '11px', fontFamily: 'JetBrains Mono' }}
-                    />
+                    <Tooltip contentStyle={{ background: '#18181f', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '4px', fontSize: '11px', fontFamily: 'JetBrains Mono' }} />
                     <Legend iconType="circle" />
-                    <Line type="monotone" name="Dice Score" dataKey="test_dice" stroke="#4fffff" strokeWidth={1.5} dot={false} />
-                    <Line type="monotone" name="Hard Dice" dataKey="test_hard_dice" stroke="#f59e0b" strokeWidth={1.5} dot={false} />
+                    <Line type="monotone" name="Dice" dataKey="val_dice" stroke="#4fffff" strokeWidth={1.5} dot={false} />
+                    <Line type="monotone" name="Hard Dice" dataKey="val_hard_dice" stroke="#f59e0b" strokeWidth={1.5} dot={false} />
+                    <Line type="monotone" name="IoU" dataKey="val_iou" stroke="#22c55e" strokeWidth={1.5} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </section>
+            )}
+
+            {vaeHistory.length > 0 && (
+            <section className="chart-section">
+              <h2 className="chart-title">CVAE Training — Loss Convergence</h2>
+              <p className="chart-subtitle">Reconstruction + KL + Projection + Surface</p>
+              <div className="chart-container">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={vaeHistory} margin={{ left: 0, bottom: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
+                    <XAxis dataKey="epoch" stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" />
+                    <YAxis stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" />
+                    <Tooltip contentStyle={{ background: '#18181f', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '4px', fontSize: '11px', fontFamily: 'JetBrains Mono' }} />
+                    <Legend iconType="circle" />
+                    <Line type="monotone" name="Train Loss" dataKey="train_loss" stroke="#a0c4ff" strokeWidth={1.5} dot={false} />
+                    <Line type="monotone" name="Test Loss" dataKey="test_loss" stroke="#ef4444" strokeWidth={1.5} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </section>
+            )}
+
+            {vaeHistory.length > 0 && (
+            <section className="chart-section">
+              <h2 className="chart-title">CVAE Training — KL & Reconstruction</h2>
+              <p className="chart-subtitle">KL divergence (latent regularisation) and reconstruction loss</p>
+              <div className="chart-container">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={vaeHistory} margin={{ left: 0, bottom: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
+                    <XAxis dataKey="epoch" stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" />
+                    <YAxis stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" />
+                    <Tooltip contentStyle={{ background: '#18181f', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '4px', fontSize: '11px', fontFamily: 'JetBrains Mono' }} />
+                    <Legend iconType="circle" />
+                    <Line type="monotone" name="Reconstruction" dataKey="train_recon" stroke="#4fffff" strokeWidth={1.5} dot={false} />
+                    <Line type="monotone" name="KL Divergence" dataKey="train_kl" stroke="#a78bfa" strokeWidth={1.5} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </section>
+            )}
+
+            {vaeHistory.length > 0 && (
+            <section className="chart-section">
+              <h2 className="chart-title">CVAE Training — Reconstruction Quality</h2>
+              <p className="chart-subtitle">Best-of-K={vaeRaw?.config?.eval_samples_k ?? 8} sampling</p>
+              <div className="chart-container">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={vaeHistory} margin={{ left: 0, bottom: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" vertical={false} />
+                    <XAxis dataKey="epoch" stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" />
+                    <YAxis stroke="rgba(255,255,255,0.2)" fontSize={10} fontFamily="JetBrains Mono" domain={[0.5, 1.0]} />
+                    <Tooltip contentStyle={{ background: '#18181f', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '4px', fontSize: '11px', fontFamily: 'JetBrains Mono' }} />
+                    <Legend iconType="circle" />
+                    <Line type="monotone" name="Dice" dataKey="test_dice" stroke="#a0c4ff" strokeWidth={1.5} dot={false} />
                     <Line type="monotone" name="IoU" dataKey="test_iou" stroke="#22c55e" strokeWidth={1.5} dot={false} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
             </section>
+            )}
+
+            {metricsHistory.length === 0 && vaeHistory.length === 0 && (
+              <div className="empty-state">No training history available</div>
+            )}
+              </>
+            )}
           </main>
         )}
       </div>

@@ -81,7 +81,7 @@ export default function Sidebar({ tab, onTabChange, vaeAvailable }: SidebarProps
           title="Metrics"
         >
           <span className="sidebar-item-icon"><ChartIcon /></span>
-          <span className="sidebar-item-label">Training Metrics</span>
+          <span className="sidebar-item-label">Metrics</span>
         </button>
       </div>
 
