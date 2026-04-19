@@ -50,28 +50,56 @@ function SyncedControls() {
 }
 
 function GridFloor() {
+  const gridTexture = useMemo(() => {
+    const size = 512
+    const canvas = document.createElement('canvas')
+    canvas.width = size
+    canvas.height = size
+    const ctx = canvas.getContext('2d')!
+    ctx.clearRect(0, 0, size, size)
+
+    const cx = size / 2
+    const cy = size / 2
+    const maxR = size / 2
+
+    // Major grid lines
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)'
+    ctx.lineWidth = 1
+    const step = size / 20
+    for (let i = 0; i <= 20; i++) {
+      const pos = i * step
+      const dist = Math.abs(pos - cx) / maxR
+      const alpha = Math.max(0, 0.06 * (1 - dist * dist))
+      ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`
+      ctx.beginPath()
+      ctx.moveTo(pos, 0)
+      ctx.lineTo(pos, size)
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.moveTo(0, pos)
+      ctx.lineTo(size, pos)
+      ctx.stroke()
+    }
+
+    // Radial fade
+    const gradient = ctx.createRadialGradient(cx, cy, 0, cx, cy, maxR)
+    gradient.addColorStop(0, 'rgba(0, 0, 0, 0)')
+    gradient.addColorStop(0.7, 'rgba(0, 0, 0, 0)')
+    gradient.addColorStop(1, 'rgba(8, 8, 15, 1)')
+    ctx.fillStyle = gradient
+    ctx.fillRect(0, 0, size, size)
+
+    const tex = new THREE.CanvasTexture(canvas)
+    tex.wrapS = THREE.ClampToEdgeWrapping
+    tex.wrapT = THREE.ClampToEdgeWrapping
+    return tex
+  }, [])
+
   return (
     <group position={[0, -32, 0]}>
-      <gridHelper args={[80, 20, '#1a1a2e', '#1a1a2e']} />
-      <gridHelper args={[80, 4, '#2a2a3e', '#2a2a3e']} />
-    </group>
-  )
-}
-
-function ScaleBar() {
-  return (
-    <group position={[24, -30, 24]}>
-      <mesh>
-        <boxGeometry args={[20, 0.12, 0.12]} />
-        <meshBasicMaterial color="#4fffff" transparent opacity={0.5} />
-      </mesh>
-      <mesh position={[-10, 0.4, 0]}>
-        <boxGeometry args={[0.12, 0.8, 0.12]} />
-        <meshBasicMaterial color="#4fffff" transparent opacity={0.5} />
-      </mesh>
-      <mesh position={[10, 0.4, 0]}>
-        <boxGeometry args={[0.12, 0.8, 0.12]} />
-        <meshBasicMaterial color="#4fffff" transparent opacity={0.5} />
+      <mesh rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[80, 80]} />
+        <meshBasicMaterial map={gridTexture} transparent depthWrite={false} />
       </mesh>
     </group>
   )
@@ -97,7 +125,7 @@ function CellMesh({ vertices, indices, color, baseOpacity, isDiffOverlay, vertex
   isDiffOverlay?: boolean
   vertexColors?: number[]
 }) {
-  const op = baseOpacity ?? 0.18
+  const op = baseOpacity ?? 0.22
   const hasVColors = !!vertexColors && vertexColors.length > 0
   const geometry = useMemo(() => {
     if (!vertices?.length || !indices?.length) return null
@@ -141,12 +169,12 @@ function CellMesh({ vertices, indices, color, baseOpacity, isDiffOverlay, vertex
           <meshStandardMaterial
             color={color}
             transparent
-            opacity={0.4}
+            opacity={0.45}
             side={THREE.DoubleSide}
-            roughness={0.5}
+            roughness={0.4}
             metalness={0.0}
             emissive={color}
-            emissiveIntensity={0.35}
+            emissiveIntensity={0.3}
             depthTest={true}
             depthWrite={false}
           />
@@ -163,47 +191,52 @@ function CellMesh({ vertices, indices, color, baseOpacity, isDiffOverlay, vertex
             transparent
             opacity={op}
             side={THREE.DoubleSide}
-            roughness={0.4}
-            metalness={0.0}
+            roughness={0.35}
+            metalness={0.05}
             depthWrite={op > 0.5}
             vertexColors
             emissive={'#ffffff'}
-            emissiveIntensity={0.15}
+            emissiveIntensity={0.1}
           />
         </mesh>
       </group>
     )
   }
 
-    return (
+  return (
     <group renderOrder={0}>
+      {/* Основная поверхность — полупрозрачная, мягкая */}
       <mesh geometry={geometry} renderOrder={0}>
-        <meshStandardMaterial
+        <meshPhysicalMaterial
           color={color}
           transparent
           opacity={op}
           side={THREE.DoubleSide}
-          roughness={0.6}
-          metalness={0.05}
+          roughness={0.45}
+          metalness={0.02}
+          clearcoat={0.1}
+          clearcoatRoughness={0.4}
           depthWrite={op > 0.5}
         />
       </mesh>
+      {/* Wireframe — тонкий и ненавязчивый */}
       <mesh geometry={geometry} renderOrder={0}>
         <meshBasicMaterial
           color={color}
           wireframe
           transparent
-          opacity={0.12}
+          opacity={0.06}
           blending={THREE.AdditiveBlending}
           depthWrite={false}
         />
       </mesh>
+      {/* Точки вершин — маленькие и аккуратные */}
       <points geometry={geometry} renderOrder={0}>
         <pointsMaterial
-          size={0.3}
+          size={0.2}
           color={color}
           transparent
-          opacity={0.9}
+          opacity={0.7}
           map={circleTexture}
           alphaMap={circleTexture}
           alphaTest={0.01}
@@ -215,26 +248,49 @@ function CellMesh({ vertices, indices, color, baseOpacity, isDiffOverlay, vertex
   )
 }
 
-function Scene({ meshData, color, label, diffMesh, diffActive }: {
+function Scene({ meshData, color, label, diffMesh, diffActive, overlay, onToggleOverlay }: {
   meshData: { vertices: number[]; indices: number[] } | null
   color: string
   label: string
   diffMesh?: { fp_vertex_colors: number[] | null; fn: { vertices: number[]; indices: number[] } | null } | null
   diffActive?: boolean
+  overlay?: boolean
+  onToggleOverlay?: () => void
 }) {
   const showDiff = diffActive && diffMesh
-  const meshOpacity = showDiff ? 0.85 : 0.18
+  const meshOpacity = showDiff ? 0.85 : 0.22
   return (
     <div className="scene-container">
       <div className="scene-label">{label}</div>
+      {onToggleOverlay && (
+        <div className="scene-overlay-panel">
+          <button
+            className={`scene-overlay-btn ${overlay ? 'active' : ''}`}
+            onClick={onToggleOverlay}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="2" x2="12" y2="22" />
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10" />
+            </svg>
+            Diff
+          </button>
+          {overlay && (
+            <div className="scene-overlay-legend">
+              <span className="legend-item"><span className="legend-dot" style={{ background: '#e87171' }} />FP</span>
+              <span className="legend-item"><span className="legend-dot" style={{ background: '#5eead4' }} />FN</span>
+              <span className="legend-item"><span className="legend-dot" style={{ background: '#94a3b8' }} />OK</span>
+            </div>
+          )}
+        </div>
+      )}
       <Canvas camera={{ position: [0, 40, 50], fov: 45 }} gl={{ antialias: true }} onCreated={({ gl }) => { gl.sortObjects = true }}>
-        <color attach="background" args={['#08080f']} />
-        <ambientLight intensity={0.25} />
-        <directionalLight position={[30, 50, 20]} intensity={1.2} color="#ffffff" />
-        <directionalLight position={[-20, 10, -30]} intensity={0.4} color={color} />
-        <pointLight position={[0, -20, 0]} intensity={0.5} color="#6366f1" />
+        <color attach="background" args={['#0a0a12']} />
+        <ambientLight intensity={0.3} />
+        <directionalLight position={[30, 50, 20]} intensity={1.0} color="#f0f0f5" />
+        <directionalLight position={[-20, 30, -20]} intensity={0.35} color="#c8d0e0" />
+        <pointLight position={[0, -20, 0]} intensity={0.15} color="#94a3b8" />
         <GridFloor />
-        <ScaleBar />
         {meshData && (
           <CellMesh
             vertices={meshData.vertices}
@@ -500,29 +556,12 @@ function App() {
 
               <div className="top-block-pipeline">
                 <PipelineTracker activeStage={activeStage} />
-                {hasResults && (
-                  <div className="overlay-controls">
-                    <button
-                      className={`overlay-btn ${overlay ? 'overlay-btn-active' : ''}`}
-                      onClick={() => setOverlay(!overlay)}
-                    >
-                      Diff View
-                    </button>
-                    {overlay && (
-                      <div className="overlay-legend">
-                        <span className="legend-item"><span className="legend-dot" style={{ background: '#d97373' }} />Extra (FP)</span>
-                        <span className="legend-item"><span className="legend-dot" style={{ background: '#5eead4' }} />Missing (FN)</span>
-                        <span className="legend-item"><span className="legend-dot" style={{ background: '#949ea8' }} />Correct</span>
-                      </div>
-                    )}
-                  </div>
-                )}
               </div>
             </section>
 
             {(loading || hasResults) && (
               <section className={`viewports ${vaeData ? 'viewports-3' : ''}`}>
-                  <div className="viewport">
+                  <div className="viewport viewport-enter">
                     {cnnData && <MetricStrip metrics={buildMetrics(cnnData)} />}
                     {loading && !cnnData && (
                       <div className="viewport-loading">
@@ -531,25 +570,29 @@ function App() {
                     )}
                     <Scene
                       meshData={cnnData?.pred}
-                      color="#e4e4e7"
+                      color="#d4d4d8"
                       label="CNN Prediction"
                       diffMesh={overlay ? cnnData?.diff : undefined}
                       diffActive={overlay}
+                      overlay={overlay}
+                      onToggleOverlay={hasResults ? () => setOverlay(!overlay) : undefined}
                     />
                   </div>
                   {vaeData && (
-                    <div className="viewport">
+                    <div className="viewport viewport-enter" style={{ animationDelay: '60ms' }}>
                       <MetricStrip metrics={buildMetrics(vaeData)} />
                       <Scene
                         meshData={vaeData?.pred}
-                        color="#e4e4e7"
+                        color="#d4d4d8"
                         label="VAE Generation"
                         diffMesh={overlay ? vaeData?.diff : undefined}
                         diffActive={overlay}
+                        overlay={overlay}
+                        onToggleOverlay={() => setOverlay(!overlay)}
                       />
                     </div>
                   )}
-                  <div className="viewport">
+                  <div className="viewport viewport-enter" style={{ animationDelay: '120ms' }}>
                     {cnnData && <MetricStrip metrics={[
                       { key: 'gt_info', label: 'Ground Truth', value: 'reference' },
                       { key: 'gt_dice', label: 'Ref Dice', value: cnnData?.dice ?? '—' },
@@ -558,7 +601,7 @@ function App() {
                     ]} />}
                     <Scene
                       meshData={cnnData?.gt}
-                      color="#e4e4e7"
+                      color="#d4d4d8"
                       label="Ground Truth"
                     />
                   </div>
