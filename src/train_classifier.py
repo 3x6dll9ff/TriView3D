@@ -131,7 +131,7 @@ def train_latent_classifier(
 
     train_ds = CellTriViewDataset(data_dir, split="train", input_mode=input_mode)
     test_ds = CellTriViewDataset(data_dir, split="test", input_mode=input_mode)
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=True)
     test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False)
 
     n_morpho = 5
