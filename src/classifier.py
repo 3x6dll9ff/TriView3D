@@ -23,6 +23,7 @@ class LatentClassifier(nn.Module):
     def __init__(self, latent_dim: int = 256, n_classes: int = 2) -> None:
         super().__init__()
         self.net = nn.Sequential(
+            nn.BatchNorm1d(latent_dim),
             nn.Linear(latent_dim, 128),
             nn.ReLU(inplace=True),
             nn.Dropout(0.3),

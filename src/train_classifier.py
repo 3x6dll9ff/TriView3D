@@ -136,9 +136,16 @@ def train_latent_classifier(
 
     n_morpho = 5
     classifier = LatentClassifier(latent_dim=latent_dim + n_morpho).to(device)
-    optimizer = torch.optim.Adam(classifier.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=3)
-    criterion = torch.nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(classifier.parameters(), lr=lr, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=5)
+
+    # Динамический расчёт весов классов для балансировки
+    labels_arr = train_ds.df["label"].values
+    counts = np.bincount(labels_arr)
+    class_weights = len(labels_arr) / (len(counts) * counts)
+    class_weights_t = torch.tensor(class_weights, dtype=torch.float32, device=device)
+
+    criterion = torch.nn.CrossEntropyLoss(weight=class_weights_t)
 
     best_acc = 0.0
     patience_counter = 0
@@ -203,10 +210,11 @@ def train_latent_classifier(
         test_acc = test_correct / test_total
         scheduler.step(test_acc)
 
-        if epoch % 5 == 0 or epoch == 1:
+        if epoch % 2 == 0 or epoch == 1:
+            current_lr = optimizer.param_groups[0]['lr']
             print(
                 f"Epoch {epoch:3d}/{epochs} | "
-                f"train_acc: {train_acc:.4f} | test_acc: {test_acc:.4f}"
+                f"train_acc: {train_acc:.4f} | test_acc: {test_acc:.4f} | lr: {current_lr:.2e}"
             )
 
         if test_acc > best_acc:
